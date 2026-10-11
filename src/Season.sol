@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Economy} from "./Economy.sol";
 import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -18,6 +21,8 @@ interface IPrizePacks {
 /// @notice Complete-week scores enter during lazy settlement, until a fixed seven-day grace deadline.
 /// Finalization visits eight districts and at most three 32-level ticket paths, never farms.
 contract Season is GameModule, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     struct Week {
         uint256[8] districtSpend;
         uint256 participants;
@@ -32,6 +37,56 @@ contract Season is GameModule, ReentrancyGuard {
     }
 
     mapping(uint256 => Week) private seasons;
+    mapping(uint256 => uint256) public pot;
+    mapping(uint256 => uint256) public potRemaining;
+    mapping(uint256 => bool) public rolled;
+    mapping(uint256 => bool) public bestClaimed;
+    mapping(uint256 => mapping(uint256 => uint256)) public eligiblePayers;
+    uint256 public potLiability;
+    event PotFunded(uint256 indexed week, uint256 amount);
+    event PotPaid(uint256 indexed week, address indexed player, uint256 amount);
+    event PotRolled(uint256 indexed from, uint256 indexed to, uint256 amount);
+
+    function depositPot(uint256 amount) external {
+        if (msg.sender != address(fees())) revert Unauthorized();
+        if (amount == 0 || IERC20(registry.token()).balanceOf(address(this)) < potLiability + amount) {
+            revert InvalidValue();
+        }
+        uint256 w = (block.timestamp - launchTime()) / 7 days;
+        pot[w] += amount;
+        potRemaining[w] += amount;
+        potLiability += amount;
+        emit PotFunded(w, amount);
+    }
+
+    function claimDeadline(uint256 w) public view returns (uint256) {
+        return deadline(w) + 4 weeks;
+    }
+
+    function _payPot(uint256 w, address p, uint256 amount) private {
+        if (rolled[w] || block.timestamp >= claimDeadline(w)) revert TooEarly();
+        potRemaining[w] -= amount;
+        potLiability -= amount;
+        if (amount != 0) IERC20(registry.token()).safeTransfer(p, amount);
+        emit PotPaid(w, p, amount);
+    }
+
+    function claimBest(uint256 w) external nonReentrant {
+        if (!seasons[w].finalized || seasons[w].best != msg.sender || bestClaimed[w]) revert InvalidValue();
+        bestClaimed[w] = true;
+        _payPot(w, msg.sender, pot[w] * 40 / 100);
+    }
+
+    function rollover(uint256 w) external {
+        if (rolled[w] || block.timestamp < claimDeadline(w)) revert TooEarly();
+        uint256 current = (block.timestamp - launchTime()) / 7 days;
+        rolled[w] = true;
+        uint256 amount = potRemaining[w];
+        potRemaining[w] = 0;
+        pot[current] += amount;
+        potRemaining[current] += amount;
+        emit PotRolled(w, current, amount);
+    }
     mapping(uint256 => mapping(address => uint256)) public spend;
     mapping(uint256 => mapping(address => uint256)) public yield;
     mapping(uint256 => mapping(address => uint256)) public index;
@@ -98,6 +153,16 @@ contract Season is GameModule, ReentrancyGuard {
         if (msg.sender != address(core()) && msg.sender != grid()) revert Unauthorized();
         if (block.timestamp < launchTime()) revert TooEarly();
         uint256 w = (block.timestamp - launchTime()) / 7 days;
+        _recordSpend(p, w, value, districtSpend);
+    }
+
+    function recordRepair(address p, uint256 w, uint256 amount) external {
+        if (msg.sender != address(core())) revert Unauthorized();
+        if (block.timestamp >= deadline(w) || completed[w][p]) return;
+        _recordSpend(p, w, amount, true);
+    }
+
+    function _recordSpend(address p, uint256 w, uint256 value, bool districtSpend) private {
         spend[w][p] += value;
         if (districtSpend && value != 0) {
             uint256 d = district(p);
@@ -187,6 +252,7 @@ contract Season is GameModule, ReentrancyGuard {
         if (!rewards().seasonReady(w)) revert TooEarly();
         if (block.timestamp >= deadline(w) || completed[w][p]) return;
         completed[w][p] = true;
+        if (districtSpendOf[w][p] != 0 && tickets[w][p] != 0) ++eligiblePayers[w][district(p)];
         uint256 weight = tickets[w][p];
         if (weight == 0) return;
         Week storage s = seasons[w];
@@ -197,7 +263,7 @@ contract Season is GameModule, ReentrancyGuard {
         s.totalTickets += weight;
         _add(w, i, weight, false);
         if (activeEpochs[w][p] < BEST_MIN_EPOCHS || spend[w][p] == 0) return;
-        uint256 score = Math.min(spend[w][p], BEST_SPEND_CAP);
+        uint256 score = Math.min(spend[w][p], Economy(registry.module(10)).farmDaily(p) * 7);
         if (s.best == address(0) || score > s.bestScore || (score == s.bestScore && uint160(p) < uint160(s.best))) {
             s.best = p;
             s.bestScore = score;
@@ -285,19 +351,21 @@ contract Season is GameModule, ReentrancyGuard {
     function claimDistrict(uint256 w) external nonReentrant returns (uint256 id) {
         Week storage s = seasons[w];
         if (
-            !s.finalized || index[w][msg.sender] == 0 || spend[w][msg.sender] == 0
+            !s.finalized || index[w][msg.sender] == 0 || districtSpendOf[w][msg.sender] == 0
                 || district(msg.sender) != s.winnerDistrict || districtClaimed[w][msg.sender]
         ) revert InvalidValue();
         districtClaimed[w][msg.sender] = true;
+        _payPot(w, msg.sender, (pot[w] * 30 / 100) / eligiblePayers[w][s.winnerDistrict]);
         id = packs().rewardPack(msg.sender);
     }
 
     function claimLottery(uint256 w) external nonReentrant returns (uint256 id) {
         if (!lotteryWon[w][msg.sender] || lotteryClaimed[w][msg.sender]) revert InvalidValue();
         lotteryClaimed[w][msg.sender] = true;
+        _payPot(w, msg.sender, pot[w] * 10 / 100);
         bytes32 seed = keccak256(abi.encode(seasons[w].seed, msg.sender));
         (uint8 k,) = ItemMath.draw(seed, false, false);
         uint8 r = uint256(seed) % 100 < 90 ? 2 : 3;
-        id = items().mint(msg.sender, k, r, false);
+        id = items().mint(msg.sender, k, r, true);
     }
 }

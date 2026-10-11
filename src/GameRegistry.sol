@@ -64,7 +64,7 @@ contract GameRegistry is IGameRegistry {
     }
 
     function creationCodeHash(uint256 role) external pure returns (bytes32) {
-        if (role >= 10) revert InvalidValue();
+        if (role >= 14) revert InvalidValue();
         return ModuleCode.hash(role);
     }
 
@@ -73,7 +73,7 @@ contract GameRegistry is IGameRegistry {
         external
         returns (address deployed)
     {
-        if (role >= 10 || index >= 8 || launchNumber == 0 || keccak256(creationCode) != ModuleCode.hash(role)) {
+        if (role >= 14 || index >= 8 || launchNumber == 0 || keccak256(creationCode) != ModuleCode.hash(role)) {
             revert InvalidValue();
         }
         if (modules[role] != address(0)) revert AlreadyDone();

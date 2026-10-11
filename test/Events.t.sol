@@ -84,16 +84,17 @@ contract EventsTest is DeferredEntryTest {
         d.farm.register(alice);
         uint256 district = d.grid.district(alice);
         uint256 before_ = d.grid.lobbyWeight(district);
+        uint256 amount = d.economy.lobbyQuote(alice);
         vm.prank(alice);
-        d.grid.lobbyETH{value: 1 ether}();
+        d.farm.lobby(amount, true);
         assertLt(d.grid.lobbyWeight(district), before_);
-        assertEq(d.fees.credit(team), 0.1 ether);
-        assertEq(d.fees.heartbeatBalance(), 0.02 ether);
+        assertEq(d.fees.teamTokens(), amount / 10);
+        assertEq(d.fees.heartbeatTokens(), amount * 2 / 100);
+        vm.warp(launch + 3 days - 1);
+        assertEq(d.grid.lobbyAmount(district), amount);
         vm.warp(launch + 3 days);
-        assertEq(d.grid.lobbyAmount(district), 0.5 ether);
-        vm.warp(launch + 6 days);
-        assertEq(d.grid.lobbyAmount(district), 0.25 ether);
-        assertGe(d.grid.lobbyWeight(district), 4000);
+        assertEq(d.grid.lobbyAmount(district), 0);
+        assertGe(d.grid.lobbyWeight(district), 5000);
     }
 
     function _force(GridOperator.Kind k, uint256 threshold, bool destroy) internal returns (bytes32 seed) {
@@ -136,7 +137,7 @@ contract EventsTest is DeferredEntryTest {
             abi.encode(GridOperator.Kind.Surge, uint16(10000), uint8(d.farm.district(alice)), seed, true)
         );
         step();
-        assertEq(d.items.data(gpu).durability, 4950);
+        assertEq(d.items.data(gpu).durability, 4900);
     }
 
     function testSurgeCanDestroyCommonButNeverLegendary() public {
@@ -160,7 +161,7 @@ contract EventsTest is DeferredEntryTest {
         (uint256 raw, uint256 productive,,) = d.rewards.shares(2, alice);
         assertEq(raw, 10000);
         assertEq(productive, 0);
-        assertEq(d.items.data(gpu).durability, 6950);
+        assertEq(d.items.data(gpu).durability, 6900);
     }
 
     function testColdPowerFireImmuneAndCleanPowerSurgeImmune() public {
@@ -174,9 +175,9 @@ contract EventsTest is DeferredEntryTest {
         step();
         (, uint256 productive,,) = d.rewards.shares(2, alice);
         assertEq(productive, 18000);
-        assertEq(d.items.data(psu).durability, 9950);
-        assertEq(d.items.data(cooling).durability, 9950);
-        assertEq(d.items.data(surge).durability, 9950);
+        assertEq(d.items.data(psu).durability, 9900);
+        assertEq(d.items.data(cooling).durability, 9900);
+        assertEq(d.items.data(surge).durability, 9900);
     }
 
     function testTheftRouterDisabledAndRepairRestores() public {
@@ -191,13 +192,13 @@ contract EventsTest is DeferredEntryTest {
         vm.prank(alice);
         d.farm.repairCable(true);
         assertGt(d.farm.roomStats(alice, 0).raw, 0);
-        assertEq(d.items.data(router).durability, 9950);
+        assertEq(d.items.data(router).durability, 9900);
     }
 
     function testSurgeNeverDestroysLegendaryOrMythic() public {
         uint256 price = d.packs.quote(112);
         vm.prank(alice);
-        d.packs.openPack{value: price}(112);
+        d.packs.openPack(112);
         veteran(alice);
         uint256 legend = place(alice, 0, 3, 0);
         uint256 mythic = place(alice, 1, 4, 1);
@@ -207,7 +208,7 @@ contract EventsTest is DeferredEntryTest {
         step();
         assertEq(d.items.data(legend).holder, alice);
         assertEq(d.items.data(mythic).holder, alice);
-        assertEq(uint256(d.items.data(legend).durability) + d.items.data(mythic).durability, 14900);
+        assertEq(uint256(d.items.data(legend).durability) + d.items.data(mythic).durability, 14800);
     }
 
     function testCheapTariffAppliesCitywide() public {

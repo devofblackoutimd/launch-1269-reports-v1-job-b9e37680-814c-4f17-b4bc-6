@@ -36,6 +36,29 @@ contract MockMarket is IMarket {
         return ethAmount * rate / 1 ether;
     }
 
+    uint256 public depth = 1_000_000 ether;
+
+    function setDepth(uint256 value) external {
+        depth = value;
+    }
+
+    function maxSellBatch() external view returns (uint256) {
+        return depth / 1000;
+    }
+
+    function quoteSell(uint256 amount) public view returns (uint256) {
+        return amount * 1 ether / rate;
+    }
+
+    function sell(uint256 amount, uint256 minimum, address recipient) external returns (uint256 received) {
+        require(!fail, "market failure");
+        token.transferFrom(msg.sender, address(this), amount);
+        received = quoteSell(amount) * fillBps / 10000;
+        require(received >= minimum, "minimum");
+        (bool ok,) = recipient.call{value: received}("");
+        require(ok);
+    }
+
     function buy(uint256, address recipient) external payable returns (uint256 amount) {
         require(!fail, "market failure");
         amount = msg.value * rate / 1 ether * fillBps / 10000;

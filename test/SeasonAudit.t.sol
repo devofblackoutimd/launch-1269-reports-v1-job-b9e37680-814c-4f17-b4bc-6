@@ -69,8 +69,9 @@ contract SeasonAuditTest is BaseTest {
         place(alice, 0, 0, 0);
         place(bob, 0, 0, 0);
         place(carol, 0, 0, 0);
+        uint256 lobby = d.economy.lobbyQuote(alice);
         vm.prank(alice);
-        d.grid.lobbyETH{value: 1 ether}();
+        d.farm.lobby(lobby * 10, true);
         for (uint256 i; i < 28; ++i) {
             calmNext();
             step();
@@ -163,9 +164,9 @@ contract SeasonAuditTest is BaseTest {
         place(alice, 0, 0, 0);
         calmNext();
         step();
-        uint256 q = d.packs.quote(240);
+        vm.mockCall(address(d.rewards), abi.encodeWithSignature("lastAverageDaily()"), abi.encode(uint256(3000 ether)));
         vm.prank(alice);
-        d.packs.openPack{value: q}(240);
+        d.packs.openPack(240);
         bytes32 seed;
         for (uint256 i;; ++i) {
             seed = bytes32(i);

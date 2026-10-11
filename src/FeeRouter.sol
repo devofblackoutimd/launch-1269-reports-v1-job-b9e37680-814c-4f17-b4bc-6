@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {GameModule} from "./lib/GameModule.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ISystemMarket} from "./interfaces/Interfaces.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Params} from "./Params.sol";
@@ -8,7 +11,20 @@ import {RewardPool} from "./RewardPool.sol";
 import {IMarket} from "./interfaces/Interfaces.sol";
 import "./lib/Errors.sol";
 
+interface IPotSeason {
+    function depositPot(uint256 amount) external;
+}
+
 contract FeeRouter is GameModule, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+    uint256 public teamTokens;
+    uint256 public heartbeatTokens;
+    uint256 public potETH;
+    uint256 public lastSell;
+    bool private selling;
+    event TokensRouted(uint256 pool, uint256 team, uint256 heartbeat);
+    event TokensSold(uint256 amount, uint256 ethAmount);
+    event PotBought(uint256 ethAmount, uint256 tokens);
     address public constant team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
     uint256 public constant TEAM_BPS = 1000;
 
@@ -68,6 +84,7 @@ contract FeeRouter is GameModule, ReentrancyGuard {
     }
 
     receive() external payable {
+        if (selling && msg.sender == address(market())) return;
         _base();
     }
 
@@ -84,13 +101,11 @@ contract FeeRouter is GameModule, ReentrancyGuard {
     }
 
     function depositPack() external payable {
-        if (msg.sender != packSale()) revert Unauthorized();
-        _route(1);
+        revert InvalidValue();
     }
 
     function depositLobby() external payable {
-        if (msg.sender != grid()) revert Unauthorized();
-        _route(2);
+        revert InvalidValue();
     }
 
     function depositSellTax() external payable {
@@ -106,18 +121,102 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         emit Routed(4, msg.value);
     }
 
-    /// @dev Packs, lobbying and sell surcharge: 88% reward pool / 10% team / 2% heartbeat (capped, excess to pool).
+    /// @dev Sell surcharge: 50% season pot, 38% reward buys, 10% team, 2% capped heartbeat.
     function _route(uint8 stream) private {
         if (msg.value == 0) revert InvalidValue();
         uint256 t = msg.value * TEAM_BPS / 10000;
-        uint256 h = msg.value * params().get(Params.Key.HeartbeatBps) / 10000;
+        uint256 h = msg.value * 200 / 10000;
         uint256 cap = HEARTBEAT_CAP();
         uint256 room = cap > heartbeatBalance ? cap - heartbeatBalance : 0;
         if (h > room) h = room;
         credit[team] += t;
         heartbeatBalance += h;
-        rewardETH += msg.value - t - h;
+        uint256 pot = stream == 3 ? msg.value / 2 : 0;
+        potETH += pot;
+        rewardETH += msg.value - t - h - pot;
         emit Routed(stream, msg.value);
+    }
+
+    function routeTokens(uint256 amount) external nonReentrant {
+        if (msg.sender != packSale() && msg.sender != registry.module(2)) revert Unauthorized();
+        if (amount == 0 || token().balanceOf(address(this)) < teamTokens + heartbeatTokens + amount) {
+            revert InvalidValue();
+        }
+        uint256 t = amount / 10;
+        uint256 h = heartbeatBalance < HEARTBEAT_CAP() ? amount * 200 / 10000 : 0;
+        uint256 reward = amount - t - h;
+        teamTokens += t;
+        heartbeatTokens += h;
+        token().safeTransfer(rewardPool(), reward);
+        RewardPool(rewardPool()).recordInflow(reward);
+        emit TokensRouted(reward, t, h);
+    }
+
+    function zapBuy(uint256 minOut, address recipient) external payable nonReentrant returns (uint256 received) {
+        if (msg.sender != packSale() || recipient != packSale() || minOut == 0 || msg.value == 0) {
+            revert Unauthorized();
+        }
+        uint256 before_ = token().balanceOf(recipient);
+        market().buy{value: msg.value}(minOut, recipient);
+        received = token().balanceOf(recipient) - before_;
+        if (received < minOut) revert InsufficientBalance();
+    }
+
+    function sellBatchQuote() public view returns (uint256 amount, uint256 minimum) {
+        ISystemMarket m = ISystemMarket(address(market()));
+        uint256 eligibleHeartbeat = heartbeatBalance < HEARTBEAT_CAP() ? heartbeatTokens : 0;
+        amount = Math.min(teamTokens + eligibleHeartbeat, m.maxSellBatch());
+        minimum = m.quoteSell(amount) * 9850 / 10000;
+    }
+
+    function executeSells(uint256 amount, uint256 minOut) external nonReentrant returns (uint256 received) {
+        if (lastSell != 0 && block.timestamp < lastSell + 5 minutes) revert TooEarly();
+        if (heartbeatBalance >= HEARTBEAT_CAP() && heartbeatTokens != 0) {
+            uint256 excess = heartbeatTokens;
+            heartbeatTokens = 0;
+            token().safeTransfer(rewardPool(), excess);
+            RewardPool(rewardPool()).recordInflow(excess);
+        }
+        ISystemMarket m = ISystemMarket(address(market()));
+        uint256 total = teamTokens + heartbeatTokens;
+        // A caller cannot consume the cadence with dust while a larger safe batch is queued.
+        if (amount == 0 || amount != Math.min(total, m.maxSellBatch())) revert InvalidValue();
+        uint256 quoted = m.quoteSell(amount);
+        if (minOut == 0 || minOut < quoted * 9850 / 10000) revert InvalidValue();
+        uint256 h = amount * heartbeatTokens / total;
+        teamTokens -= amount - h;
+        heartbeatTokens -= h;
+        lastSell = block.timestamp;
+        uint256 before_ = address(this).balance;
+        token().forceApprove(address(m), amount);
+        selling = true;
+        m.sell(amount, minOut, address(this));
+        selling = false;
+        token().forceApprove(address(m), 0);
+        received = address(this).balance - before_;
+        if (received < minOut) revert InsufficientBalance();
+        uint256 hb = received * h / amount;
+        uint256 accepted = Math.min(hb, HEARTBEAT_CAP() - heartbeatBalance);
+        heartbeatBalance += accepted;
+        rewardETH += hb - accepted;
+        credit[team] += received - hb;
+        emit TokensSold(amount, received);
+    }
+
+    function executePotBuys(uint256 amount, uint256 minOut) external nonReentrant returns (uint256 received) {
+        if (amount == 0 || amount > potETH || amount > params().get(Params.Key.BuyBatch)) revert InvalidValue();
+        if (lastBuy != 0 && block.timestamp < lastBuy + 5 minutes) revert TooEarly();
+        uint256 minimum = Math.min(potETH, MIN_BUY_AMOUNT);
+        uint256 quote = market().quote(amount);
+        if (amount < minimum || minOut == 0 || quote == 0 || minOut < quote * 9850 / 10000) revert InvalidValue();
+        potETH -= amount;
+        lastBuy = block.timestamp;
+        uint256 before_ = token().balanceOf(season());
+        market().buy{value: amount}(minOut, season());
+        received = token().balanceOf(season()) - before_;
+        if (received < minOut) revert InsufficientBalance();
+        IPotSeason(season()).depositPot(received);
+        emit PotBought(amount, received);
     }
 
     function payBounty(address caller) external {

@@ -18,6 +18,43 @@ contract StarterClaim is GameModule, ReentrancyGuard {
         bool resolved;
     }
 
+    bytes32 public freeRoot;
+    uint256 public freeClaimed;
+    mapping(address => bool) public freeClaimedBy;
+    mapping(uint256 => bool) public freeIndexClaimed;
+    event FreeRootSet(bytes32 root);
+    event FreePackClaimed(address indexed player, uint256 indexed index, uint256 receipt);
+
+    function setFreeRoot(bytes32 root_) external {
+        if (msg.sender != Params(registry.params()).swarmWallet()) revert Unauthorized();
+        if (root_ == bytes32(0) || freeRoot != bytes32(0)) revert InvalidValue();
+        if (block.timestamp < launchTime() || block.timestamp > launchTime() + 7 days) revert TooEarly();
+        freeRoot = root_;
+        emit FreeRootSet(root_);
+    }
+
+    function freeClaimEnds() public view returns (uint256) {
+        return launchTime() + 30 days;
+    }
+
+    function claimFree(uint256 index, bytes32[] calldata proof) external nonReentrant returns (uint256 id) {
+        if (freeRoot == bytes32(0)) revert NotConfigured();
+        if (block.timestamp >= freeClaimEnds()) revert TooEarly();
+        if (index >= 500 || freeClaimed >= 500 || freeIndexClaimed[index] || freeClaimedBy[msg.sender]) {
+            revert InvalidValue();
+        }
+        if (!MerkleProof.verifyCalldata(proof, freeRoot, keccak256(abi.encode(index, msg.sender)))) {
+            revert InvalidProof();
+        }
+        freeIndexClaimed[index] = true;
+        freeClaimedBy[msg.sender] = true;
+        ++freeClaimed;
+        id = (uint256(1) << 255) | index;
+        claims[id] = Claim(msg.sender, uint64(ChainClock.number() + 2), false);
+        farm().register(msg.sender);
+        emit StarterCommitted(id, msg.sender, ChainClock.number() + 2);
+        emit FreePackClaimed(msg.sender, index, id);
+    }
     mapping(uint256 => bool) public entropyCaptured;
     mapping(uint256 => bytes32) public entropyHash;
     mapping(uint256 => Claim) public claims;
@@ -52,6 +89,7 @@ contract StarterClaim is GameModule, ReentrancyGuard {
 
     function claim(uint256 tokenId, bytes32[] calldata proof) external nonReentrant {
         if (block.timestamp < launchTime() + 48 hours || block.timestamp >= launchTime() + 16 days) revert TooEarly();
+        if (tokenId >= uint256(1) << 255) revert InvalidValue();
         if (claims[tokenId].player != address(0)) revert AlreadyDone();
         if (!MerkleProof.verifyCalldata(proof, root(), keccak256(abi.encode(tokenId, msg.sender)))) {
             revert InvalidProof();

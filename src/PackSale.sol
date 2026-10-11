@@ -10,10 +10,15 @@ import {Params} from "./Params.sol";
 import {FeeRouter} from "./FeeRouter.sol";
 import {ICore} from "./interfaces/IGame.sol";
 import {ChainClock} from "./lib/ChainClock.sol";
+import {Economy} from "./Economy.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ItemMath} from "./lib/ItemMath.sol";
 import "./lib/Errors.sol";
 
 contract PackSale is GameModule, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     struct Commit {
         address player;
         uint64 target;
@@ -27,6 +32,35 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     uint256 public sold;
+    uint8 public profile = 1;
+    bool public profileChosen;
+    event ProfileSelected(uint256 profile);
+
+    function selectProfile(uint8 choice) external {
+        if (msg.sender != params().swarmWallet()) revert Unauthorized();
+        if (sold != 0 || choice > 2) revert InvalidValue();
+        profile = choice;
+        profileChosen = true;
+        emit ProfileSelected(choice);
+    }
+
+    /// @notice Values are yield-days (1e18), decay basis points/hour, sales/hour target.
+    function profileParams(uint256 choice)
+        public
+        pure
+        returns (uint256 start, uint256 floor, uint256 ceiling, uint256 decay, uint256 target)
+    {
+        if (choice == 0) return (3 ether, 1.5 ether, 6 ether, 300, 20);
+        if (choice == 1) return (5 ether, 2.5 ether, 10 ether, 200, 20);
+        if (choice == 2) return (7 ether, 3.5 ether, 14 ether, 100, 15);
+        revert InvalidValue();
+    }
+
+    function priceBounds() public view returns (uint256 low, uint256 high) {
+        (, uint256 floor, uint256 ceiling,,) = profileParams(profile);
+        uint256 daily = Economy(registry.module(10)).averageDaily();
+        return (daily * floor / 1 ether, daily * ceiling / 1 ether);
+    }
     /// @notice Sales open this long after the authenticated hook initialization timestamp.
     uint256 public constant OPEN_DELAY = 60 minutes;
     uint256 public pausedUntil;
@@ -92,26 +126,32 @@ contract PackSale is GameModule, ReentrancyGuard {
         return block.timestamp >= opensAt() && !paused();
     }
 
+    function ready() external view returns (bool) {
+        return isOpen() && profileChosen && RewardPool(registry.module(0)).endowed()
+            && ILaunchHook(registry.market()).fees() == address(fees());
+    }
+
     function price() public view returns (uint256) {
         return priceAt(sold);
     }
 
     function priceAt(uint256 sales) public view returns (uint256 p) {
         uint256 elapsed = block.timestamp > opensAt() ? block.timestamp - opensAt() : 0;
-        uint256 target = params().get(Params.Key.DemandTarget);
+        (uint256 start, uint256 floor, uint256 ceiling, uint256 decay, uint256 target) = profileParams(profile);
         int256 ahead = int256(sales * 1 ether) - int256(elapsed * target * 1 ether / 1 hours);
         int256 exponent;
         if (ahead >= 0) {
             exponent = wadLn(int256(1 ether + params().get(Params.Key.PriceStepBps) * 1e14)) * ahead / 1 ether;
         } else {
-            exponent = wadLn(int256(1 ether - params().get(Params.Key.PriceDecayBps) * 1e14)) * (-ahead)
-                / int256(target) / 1 ether;
+            exponent = wadLn(int256(1 ether - decay * 1e14)) * (-ahead) / int256(target) / 1 ether;
         }
         if (exponent > 10 ether) exponent = 10 ether;
         if (exponent < -10 ether) exponent = -10 ether;
-        p = params().get(Params.Key.PriceStart) * uint256(wadExp(exponent)) / 1 ether;
-        uint256 low = params().get(Params.Key.PriceFloor);
-        uint256 high = params().get(Params.Key.PriceCeiling);
+        uint256 daysPrice = start * uint256(wadExp(exponent)) / 1 ether;
+        if (daysPrice < floor) daysPrice = floor;
+        if (daysPrice > ceiling) daysPrice = ceiling;
+        p = Economy(registry.module(10)).averageDaily() * daysPrice / 1 ether;
+        (uint256 low, uint256 high) = priceBounds();
         if (p < low) p = low;
         if (p > high) p = high;
     }
@@ -119,7 +159,7 @@ contract PackSale is GameModule, ReentrancyGuard {
     /// @notice Each pack pays its position on the curve. There is no wallet, daily, or global quantity cap.
     function quote(uint256 count_) public view returns (uint256 total) {
         if (count_ == 0) revert InvalidValue();
-        uint256 ceiling = params().get(Params.Key.PriceCeiling);
+        (, uint256 ceiling) = priceBounds();
         for (uint256 i; i < count_; ++i) {
             uint256 p = priceAt(sold + i);
             if (p == ceiling) return total + (count_ - i) * ceiling;
@@ -128,14 +168,52 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     function openPack(uint256 n) external payable nonReentrant returns (uint256 id) {
-        if (block.timestamp < opensAt()) revert TooEarly();
-        if (paused() || msg.value != quote(n)) revert InvalidValue();
+        if (msg.value != 0) revert InvalidValue();
+        return _buy(msg.sender, msg.sender, n, type(uint256).max, false);
+    }
+
+    function buyPackFor(address recipient) external nonReentrant returns (uint256) {
+        return _buy(msg.sender, recipient, 1, type(uint256).max, false);
+    }
+
+    function buyPacksFor(address recipient, uint256 n, uint256 maxCost) external nonReentrant returns (uint256) {
+        return _buy(msg.sender, recipient, n, maxCost, false);
+    }
+
+    function buyWithETH(address recipient, uint256 n, uint256 minTokens, uint256 maxCost)
+        external
+        payable
+        nonReentrant
+        returns (uint256 id)
+    {
+        if (!isOpen()) revert TooEarly();
         _requireReady();
+        uint256 received = fees().zapBuy{value: msg.value}(minTokens, address(this));
+        uint256 cost = quote(n);
+        if (received < cost) revert InsufficientBalance();
+        id = _buy(address(this), recipient, n, maxCost, true);
+        if (received > cost) IERC20(registry.token()).safeTransfer(msg.sender, received - cost);
+    }
+
+    function _buy(address payer, address recipient, uint256 n, uint256 maximum, bool funded)
+        private
+        returns (uint256 id)
+    {
+        if (!isOpen()) revert TooEarly();
+        if (recipient == address(0)) revert InvalidAddress();
+        _requireReady();
+        uint256 cost = quote(n);
+        if (cost > maximum) revert InvalidValue();
         sold += n;
-        farm().register(msg.sender);
-        farm().paidPackBought(msg.sender, n, msg.value);
-        id = _commit(msg.sender, n, false);
-        fees().depositPack{value: msg.value}();
+        farm().register(recipient);
+        farm().paidPackBought(recipient, n, cost);
+        id = _commit(recipient, n, false);
+        IERC20 t = IERC20(registry.token());
+        uint256 before_ = t.balanceOf(address(fees()));
+        if (funded) t.safeTransfer(address(fees()), cost);
+        else t.safeTransferFrom(payer, address(fees()), cost);
+        if (t.balanceOf(address(fees())) - before_ != cost) revert InvalidValue();
+        fees().routeTokens(cost);
     }
 
     function tokenPack(address p) external nonReentrant returns (uint256 id) {
@@ -147,6 +225,7 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     function _requireReady() private view {
+        if (!profileChosen) revert NotConfigured();
         if (!RewardPool(registry.module(0)).endowed() || ILaunchHook(registry.market()).fees() != address(fees())) {
             revert NotConfigured();
         }
@@ -216,7 +295,7 @@ contract PackSale is GameModule, ReentrancyGuard {
             uint8 r;
             (k, r) = ItemMath.draw(keccak256(abi.encode(c.seed, first + i)), c.mythic, false);
             if (c.guaranteed && i % 3 == 0 && r < 1) r = 1;
-            items().mint(c.player, k, r, false);
+            items().mint(c.player, k, r, c.guaranteed);
         }
         emit PackOpened(id, n, c.expired);
     }

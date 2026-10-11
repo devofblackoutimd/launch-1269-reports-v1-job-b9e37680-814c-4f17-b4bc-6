@@ -9,8 +9,8 @@ contract KeeperProfitTest is BaseTest {
         super.setUp();
         vm.txGasPrice(20_000_000);
         vm.deal(address(d.packs), 50 ether);
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 50 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 50 ether}();
         assertEq(d.fees.heartbeatBalance(), 1 ether);
     }
 

@@ -6,7 +6,7 @@ No private key support: --send uses an explicitly supplied unlocked RPC signer.
 import argparse, json, subprocess, time, urllib.request
 from pathlib import Path
 
-SELECTORS={'pack':'c7c4a615','starter':'a888c2cd','captured':'6700ba85','capture':'46758fb6'}
+SELECTORS={'pack':'c7c4a615','starter':'a888c2cd','captured':'6700ba85','capture':'46758fb6','enhancement':'42b343a3','enhanceCapture':'b5c3e81a'}
 
 def calldata(selector, receipt):
     return '0x'+selector+format(receipt,'064x')
@@ -39,19 +39,21 @@ class Keeper:
             data=words(self.rpc.call(address,calldata(SELECTORS[kind],receipt)))
             if not data or data[0]==0:
                 del self.state['pending'][key];continue
-            captured=bool(data[7]) if kind=='pack' else bool(words(self.rpc.call(address,calldata(SELECTORS['captured'],receipt)))[0])
+            captured=bool(data[5]) if kind=='enhancement' else bool(data[7]) if kind=='pack' else bool(words(self.rpc.call(address,calldata(SELECTORS['captured'],receipt)))[0])
+            target=data[2] if kind=='enhancement' else data[1]
             if captured:
                 del self.state['pending'][key];continue
-            if native<=data[1]:continue
+            if native<=target:continue
             # Expired capture itself rearms. On the next eligible block, this loop captures the new target.
-            self.rpc.send(address,receipt)
-            actions.append((kind,receipt,'rearm' if native>data[1]+256 else 'capture'))
+            if kind=='enhancement': self.rpc.send_enhancement(address,receipt)
+            else: self.rpc.send(address,receipt)
+            actions.append((kind,receipt,'rearm' if native>target+256 else 'capture'))
         return actions
 
 class Transport:
     def __init__(self,url,send=False,sender=None):
         self.url=url;self.broadcast=send;self.sender=sender
-        self.topics={k:subprocess.check_output(['cast','keccak',sig],text=True).strip() for k,sig in {'pack':'PackCommitted(uint256,address,uint256,uint256,bool)','starter':'StarterCommitted(uint256,address,uint256)'}.items()}
+        self.topics={k:subprocess.check_output(['cast','keccak',sig],text=True).strip() for k,sig in {'pack':'PackCommitted(uint256,address,uint256,uint256,bool)','starter':'StarterCommitted(uint256,address,uint256)','enhancement':'EnhancementCommitted(uint256,address,uint256,uint256,uint256,uint256)'}.items()}
     def request(self,method,params):
         request=urllib.request.Request(self.url,json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(),{'Content-Type':'application/json'})
         with urllib.request.urlopen(request,timeout=15) as response:result=json.load(response)
@@ -71,9 +73,15 @@ class Transport:
             subprocess.run(['cast','send','--rpc-url',self.url,'--unlocked','--from',self.sender,address,'captureEntropy(uint256)',str(receipt)],check=True,capture_output=True,text=True,timeout=45)
         else:print(json.dumps({'to':address,'data':calldata(SELECTORS['capture'],receipt),'dryRun':True}),flush=True)
 
+    def send_enhancement(self,address,receipt):
+        if self.broadcast:
+            subprocess.run(['cast','send','--rpc-url',self.url,'--unlocked','--from',self.sender,address,'capture(uint256)',str(receipt)],check=True,capture_output=True,text=True,timeout=45)
+        else:print(json.dumps({'to':address,'data':calldata(SELECTORS['enhanceCapture'],receipt),'dryRun':True}),flush=True)
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ['rpc-url','packs','starter']:p.add_argument('--'+name,required=True)
+    p.add_argument('--enhancement',help='Pinned Enhancement module; include for v3.5 receipts')
     p.add_argument('--from-block',type=int,required=True);p.add_argument('--state',type=Path,required=True)
     p.add_argument('--interval',type=float,default=2);p.add_argument('--send',action='store_true');p.add_argument('--sender');p.add_argument('--once',action='store_true')
     a=p.parse_args()
@@ -82,6 +90,7 @@ def main():
     transport=Transport(a.rpc_url,a.send,a.sender)
     state=json.loads(a.state.read_text()) if a.state.exists() else None
     identity={'chain':transport.request('eth_chainId',[]),'contracts':{'pack':a.packs,'starter':a.starter}}
+    if a.enhancement: identity['contracts']['enhancement']=a.enhancement
     if state and state.get('identity')!=identity:p.error('state belongs to different contracts/chain')
     bot=Keeper(transport,identity['contracts'],a.from_block,state)
     bot.state['identity']=identity

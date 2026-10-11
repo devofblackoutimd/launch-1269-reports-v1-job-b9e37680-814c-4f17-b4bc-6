@@ -20,6 +20,7 @@ interface IV4PoolManager {
     function unlock(bytes calldata data) external returns (bytes memory);
     function swap(PoolKey memory key, SwapParams memory params, bytes calldata hookData) external returns (int256 delta);
     function take(address currency, address to, uint256 amount) external;
+    function sync(address currency) external;
     function settle() external payable returns (uint256);
     function extsload(bytes32 slot) external view returns (bytes32);
 }

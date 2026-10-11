@@ -57,18 +57,25 @@ contract ItemsTest is DeferredEntryTest {
             }
         }
         assertEq(d.farm.level(alice), 10);
+        assertEq(d.farm.rooms(alice), 1);
+        for (uint256 room = 1; room < 4; ++room) {
+            assertTrue(d.farm.roomEligible(alice, room));
+            vm.prank(alice);
+            d.farm.buyRoom(room, true);
+        }
         assertEq(d.farm.rooms(alice), 4);
         assertEq(d.farm.rooms(bob), 1);
         vm.prank(bob);
         d.farm.register(bob);
         vm.warp(vm.getBlockTimestamp() + 3 days);
-        assertEq(d.farm.rooms(bob), 2);
+        assertEq(d.farm.rooms(bob), 1);
+        assertTrue(d.farm.roomEligible(bob, 1));
     }
 
     function testPaidXpCannotBypassRoomTwoAgeGate() public {
         uint256 cost = d.packs.quote(112);
         vm.prank(alice);
-        d.packs.openPack{value: cost}(112);
+        d.packs.openPack(112);
         // v3.3: paid XP is capped at 400 per day, so a whale stays at level 3 on day one.
         assertEq(d.farm.xp(alice), 400);
         assertEq(d.farm.level(alice), 3);
@@ -80,7 +87,7 @@ contract ItemsTest is DeferredEntryTest {
         vm.prank(alice);
         d.farm.place(id, 1, 0);
         vm.warp(vm.getBlockTimestamp() + 3 days);
-        assertTrue(d.farm.roomUnlocked(alice, 1));
+        assertTrue(d.farm.roomEligible(alice, 1));
     }
 
     function testEquipRarityGatesAndMythicGate() public {
@@ -98,7 +105,7 @@ contract ItemsTest is DeferredEntryTest {
         d.farm.place(m, 0, 2);
         uint256 q = d.packs.quote(16);
         vm.prank(alice);
-        d.packs.openPack{value: q}(16);
+        d.packs.openPack(16);
         assertEq(d.farm.level(alice), 3);
         vm.prank(alice);
         d.farm.place(e, 0, 0);
@@ -156,14 +163,14 @@ contract ItemsTest is DeferredEntryTest {
         assertEq(s.power, s.productive * 8 / 10);
     }
 
-    function testDurabilityDecayRepairAndOverclockPreserved() public {
+    function testDurabilityWearRepairAndEnhancementMetadataPreserved() public {
         uint256 id = place(alice, 0, 0, 0);
         payPack(alice);
         calmNext();
         step();
         calmNext();
         step();
-        assertEq(d.items.data(id).durability, 9950);
+        assertEq(d.items.data(id).durability, 9900);
         uint256 before_ = token.balanceOf(address(d.pool));
         vm.prank(alice);
         d.farm.repair(id, true);
@@ -172,10 +179,8 @@ contract ItemsTest is DeferredEntryTest {
         vm.expectRevert(InvalidValue.selector);
         vm.prank(alice);
         d.farm.repair(id, true);
-        for (uint256 i; i < 5; ++i) {
-            vm.prank(alice);
-            d.farm.overclock(id, true);
-        }
+        vm.prank(address(d.farm));
+        d.items.maintain(id, 10000, 5);
         assertEq(d.items.data(id).overclock, 5);
         vm.expectRevert(InvalidValue.selector);
         vm.prank(alice);
@@ -231,11 +236,11 @@ contract ItemsTest is DeferredEntryTest {
         uint256 before_ = token.balanceOf(alice);
         vm.prank(alice);
         d.farm.expand(true);
-        assertEq(before_ - token.balanceOf(alice), 100 ether);
+        assertEq(before_ - token.balanceOf(alice), 3000 ether);
         before_ = token.balanceOf(alice);
         vm.prank(alice);
         d.farm.expand(true);
-        assertEq(before_ - token.balanceOf(alice), 400 ether);
+        assertEq(before_ - token.balanceOf(alice), 12000 ether);
         assertEq(d.items.capacity(alice), 25);
     }
 }

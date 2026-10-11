@@ -15,6 +15,10 @@ interface IRewards {
     function epochStart() external view returns (uint256);
     function epochEnd() external view returns (uint256);
     function settledEpoch() external view returns (uint256);
+    function pending(address p) external view returns (uint256);
+    function epochTime(uint256 e) external view returns (uint256);
+    function farmWeight(address p, uint256 e) external view returns (uint256);
+    function spendTo(address p, uint256 amount, address to) external;
     function spend(address p, uint256 nominal) external returns (uint256);
     function scrap(address p, uint256 hash, uint256 minimum) external returns (uint256);
     function recordSales(uint256 count) external;
@@ -25,6 +29,8 @@ interface IRewards {
 }
 
 interface ICore {
+    function civicPurchase(address p, uint256 cost) external;
+    function autoRepair(address p, uint256 e) external;
     function hasFarm(address p) external view returns (bool);
     function count() external view returns (uint256);
     function playerAt(uint256 i) external view returns (address);
@@ -39,6 +45,7 @@ interface ICore {
 interface ISeason {
     function complete(address p, uint256 week) external;
     function recordSpend(address p, uint256 ethValue, bool districtSpend) external;
+    function recordRepair(address p, uint256 week, uint256 amount) external;
     function recordActivity(address p, uint256 week, uint256 gross, uint256 committedHash) external;
     function addPrize(uint256 week, uint256 amount) external;
 }

@@ -4,12 +4,13 @@ import {BaseTest} from "./Base.t.sol";
 
 contract GasTest is BaseTest {
     function testGasCommonActions() public {
+        token.transfer(alice, 50_000_000 ether);
         fund(100_000_000 ether);
         uint256 price = d.packs.price();
         vm.prank(alice);
         uint256 g = gasleft();
-        uint256 pack = d.packs.openPack{value: price}(1);
-        emit log_named_uint("buy ETH pack", g - gasleft());
+        uint256 pack = d.packs.openPack(1);
+        emit log_named_uint("buy token pack", g - gasleft());
         entropy();
         g = gasleft();
         d.packs.resolve(pack, 1);
@@ -27,18 +28,19 @@ contract GasTest is BaseTest {
         g = gasleft();
         d.farm.repair(id, true);
         emit log_named_uint("repair wallet", g - gasleft());
+        uint256 spare = mintItem(alice, 1, 0);
         vm.prank(alice);
         g = gasleft();
-        d.farm.overclock(id, true);
-        emit log_named_uint("overclock", g - gasleft());
+        d.enhancement.commit(spare, type(uint256).max, true);
+        emit log_named_uint("enhancement commit", g - gasleft());
         vm.prank(alice);
         g = gasleft();
         d.farm.expand(true);
         emit log_named_uint("expand", g - gasleft());
         vm.prank(alice);
         g = gasleft();
-        d.farm.buyTokenPack(false);
-        emit log_named_uint("token pack internal", g - gasleft());
+        d.farm.buyTokenPack(true);
+        emit log_named_uint("token pack wallet", g - gasleft());
         uint256 pending = d.rewards.pending(alice);
         vm.prank(alice);
         g = gasleft();
@@ -72,13 +74,17 @@ contract GasTest is BaseTest {
         fund(100_000_000 ether);
         uint256 q = d.packs.quote(112);
         vm.prank(alice);
-        d.packs.openPack{value: q}(112);
+        d.packs.openPack(112);
         veteran(alice);
         vm.warp(launch + 3 days);
         entropy();
         d.rewards.advanceEpoch();
         finish();
         for (uint256 room; room < 4; ++room) {
+            if (room != 0) {
+                vm.prank(alice);
+                d.farm.buyRoom(room, true);
+            }
             for (uint256 slot; slot < 6; ++slot) {
                 uint256 id = mintItem(alice, uint8(slot), 0);
                 vm.prank(alice);

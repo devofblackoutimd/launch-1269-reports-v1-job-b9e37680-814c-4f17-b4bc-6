@@ -207,12 +207,12 @@ contract V33Test is BaseTest {
         place(alice, 0, 0, 0);
         uint256 q = d.packs.quote(16);
         vm.prank(alice);
-        d.packs.openPack{value: q}(16);
+        d.packs.openPack(16);
         assertEq(d.farm.xp(alice), 400);
         assertEq(d.farm.paidXpRoom(alice), 0);
         q = d.packs.quote(40);
         vm.prank(alice);
-        d.packs.openPack{value: q}(40); // whale buy: packs delivered, XP not
+        d.packs.openPack(40); // whale buy: packs delivered, XP not
         assertEq(d.farm.xp(alice), 400);
         assertEq(d.farm.paidPacks(alice), 56);
         uint256 day = vm.getBlockTimestamp() / 1 days;
@@ -236,11 +236,11 @@ contract V33Test is BaseTest {
     function testPartialRoomIsClippedNotReverted() public {
         uint256 q = d.packs.quote(15);
         vm.prank(alice);
-        d.packs.openPack{value: q}(15);
+        d.packs.openPack(15);
         assertEq(d.farm.paidXpRoom(alice), 25);
         q = d.packs.quote(2);
         vm.prank(alice);
-        d.packs.openPack{value: q}(2);
+        d.packs.openPack(2);
         assertEq(d.farm.xp(alice), 400);
         assertEq(d.farm.paidXpRoom(alice), 0);
         assertEq(d.farm.paidPacks(alice), 17);
@@ -253,7 +253,7 @@ contract V33Test is BaseTest {
         for (uint256 dayN; dayN < 5; ++dayN) {
             uint256 q = d.packs.quote(16);
             vm.prank(alice);
-            d.packs.openPack{value: q}(16);
+            d.packs.openPack(16);
             for (uint256 i; i < 4; ++i) {
                 calmNext();
                 step();
@@ -278,7 +278,7 @@ contract V33Test is BaseTest {
         d.farm.place(mythic, 0, 2);
         vm.warp(born + 5 days);
         assertEq(d.farm.level(alice), 10);
-        assertTrue(d.farm.roomUnlocked(alice, 3));
+        assertTrue(d.farm.roomEligible(alice, 3));
     }
 
     function testMergeRemoved() public {
@@ -379,20 +379,20 @@ contract V33Test is BaseTest {
         uint256 team0 = d.fees.credit(team);
         uint256 r0 = d.fees.rewardETH();
         uint256 h0 = d.fees.heartbeatBalance();
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 1 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 1 ether}();
         assertEq(d.fees.credit(team) - team0, 0.1 ether);
         assertEq(d.fees.heartbeatBalance() - h0, 0.02 ether);
-        assertEq(d.fees.rewardETH() - r0, 0.88 ether);
+        assertEq(d.fees.rewardETH() - r0, 0.38 ether);
         vm.deal(address(d.grid), 1 ether);
-        vm.prank(address(d.grid));
-        d.fees.depositLobby{value: 1 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 1 ether}();
         assertEq(d.fees.credit(team) - team0, 0.2 ether);
         vm.deal(address(market), 1 ether);
         vm.prank(address(market));
         d.fees.depositSellTax{value: 1 ether}();
         assertEq(d.fees.credit(team) - team0, 0.3 ether);
-        assertEq(d.fees.rewardETH() - r0, 2.64 ether);
+        assertEq(d.fees.rewardETH() - r0, 1.14 ether);
     }
 
     function testHeartbeatCapExcessGoesToPoolAndBaseFeeStaysHalf() public {
@@ -400,14 +400,14 @@ contract V33Test is BaseTest {
         uint256 team0 = d.fees.credit(team);
         uint256 r0 = d.fees.rewardETH();
         uint256 h0 = d.fees.heartbeatBalance();
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 100 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 100 ether}();
         assertEq(d.fees.heartbeatBalance(), 1 ether);
         assertEq(d.fees.credit(team) - team0, 10 ether);
-        assertEq(d.fees.rewardETH() - r0, 100 ether - 10 ether - (1 ether - h0));
+        assertEq(d.fees.rewardETH() - r0, 50 ether - 10 ether - (1 ether - h0));
         d.fees.depositBaseFee{value: 1 ether}();
         assertEq(d.fees.credit(team) - team0, 10.5 ether);
-        assertEq(d.fees.rewardETH() - r0, 90.5 ether - (1 ether - h0));
+        assertEq(d.fees.rewardETH() - r0, 40.5 ether - (1 ether - h0));
     }
 
     function testLaunchTaxDepositIsAllPoolAndMarketOnly() public {
@@ -431,13 +431,13 @@ contract V33Test is BaseTest {
         uint256 price = d.packs.price();
         vm.expectRevert(TooEarly.selector);
         vm.prank(alice);
-        d.packs.openPack{value: price}(1);
+        d.packs.openPack(1);
         vm.warp(tokenLaunch() + 60 minutes);
         assertTrue(d.packs.isOpen());
         payPack(alice);
         assertEq(d.packs.sold(), 1);
         // Price curve starts at the opening, not at token launch.
-        assertEq(d.packs.priceAt(0), 0.01 ether);
+        assertEq(d.packs.priceAt(0), 15000 ether);
     }
 
     function testTokenPacksAlsoWaitForOpening() public {

@@ -24,6 +24,9 @@ contract EndowmentGameTest is BaseTest {
         d.pool.fundEndowment();
         assertEq(d.pool.available(), 0);
         d.rewards.advanceEpoch();
+        vm.prank(swarm);
+        d.packs.selectProfile(1);
+        uint256 packInflow = d.packs.price() * 88 / 100;
         payPack(alice);
         place(alice, 0, 0, 0);
         uint256 paid;
@@ -38,8 +41,8 @@ contract EndowmentGameTest is BaseTest {
                 paid += token.balanceOf(alice) - beforeBalance;
             }
             uint256 vested = principal - d.pool.lockedEndowment();
-            assertLe(paid + d.pool.reserved(), vested);
-            assertEq(token.balanceOf(address(d.pool)) + paid, principal);
+            assertLe(paid + d.pool.reserved(), vested + packInflow);
+            assertEq(token.balanceOf(address(d.pool)) + paid, principal + packInflow);
             assertGe(token.balanceOf(address(d.pool)), d.pool.reserved() + d.pool.lockedEndowment());
         }
         assertGt(paid, 0);

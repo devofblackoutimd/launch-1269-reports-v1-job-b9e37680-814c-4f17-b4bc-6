@@ -79,7 +79,7 @@ contract V34Test is BaseTest {
         uint256 before_ = alice.balance;
         vm.expectRevert(NotConfigured.selector);
         vm.prank(alice);
-        d.packs.openPack{value: q}(1);
+        d.packs.openPack(1);
         assertEq(alice.balance, before_);
         assertEq(d.packs.sold(), 0);
         uint256 tokensBefore = token.balanceOf(alice);
@@ -91,7 +91,7 @@ contract V34Test is BaseTest {
         market.configureLaunch(tokenLaunch(), bob);
         vm.expectRevert(NotConfigured.selector);
         vm.prank(alice);
-        d.packs.openPack{value: q}(1);
+        d.packs.openPack(1);
         vm.expectRevert(NotConfigured.selector);
         vm.prank(alice);
         d.farm.buyTokenPack(true);
@@ -197,8 +197,8 @@ contract V34Test is BaseTest {
         vm.warp(d.rewards.epochStart() + 3 hours);
         place(alice, 0, 0, 0);
         uint256 entry = d.rewards.entryWeight(1, alice);
-        assertEq(entry, 2500);
-        assertEq(d.rewards.epochData(1).raw, 2500);
+        assertEq(entry, 5000);
+        assertEq(d.rewards.epochData(1).raw, 5000);
         place(alice, 1, 0, 1);
         assertEq(d.rewards.entryWeight(1, alice), entry);
         assertGt(d.rewards.nextTotalHash(), entry);

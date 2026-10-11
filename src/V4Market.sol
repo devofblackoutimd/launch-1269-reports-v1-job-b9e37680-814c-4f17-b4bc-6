@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {GameRegistry, IApplicationFactory} from "./GameRegistry.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -23,6 +25,8 @@ import "./lib/Errors.sol";
 /// @notice Optional, immutable ETH/token v4 hook + buy adapter. Must be selected as the launch pool's hook.
 /// @dev Implements the TOTAL IMD-style fee (not an add-on to a second 1.25% fee hook).
 contract V4Market is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+    bool private selling;
     uint256 public constant TOTAL_CAP_BPS = 1500;
     uint256 public constant NETWORK_BPS = 25;
     uint160 public constant HOOK_FLAGS = 0x10cc; // afterInitialize, before/afterSwap and both swap deltas
@@ -423,8 +427,62 @@ contract V4Market is ReentrancyGuard {
         buying = false;
     }
 
+    function quoteSell(uint256 amount) public view returns (uint256) {
+        uint256 gross = Math.mulDiv(amount, 1 ether, twap());
+        return gross - gross * (projectBps() + NETWORK_BPS) / 10000;
+    }
+
+    /// @notice At most 0.1% of current virtual token reserves, additionally capped by 0.1 ETH TWAP value.
+    function maxSellBatch() public view returns (uint256) {
+        bytes32 slot = keccak256(abi.encode(poolId, uint256(6)));
+        uint256 liquidity = uint128(uint256(manager.extsload(bytes32(uint256(slot) + 3))));
+        uint256 sqrt = uint160(uint256(manager.extsload(slot)));
+        uint256 depth = Math.mulDiv(liquidity, sqrt, 1 << 96);
+        return Math.min(depth / 1000, twap() / 10);
+    }
+
+    function sell(uint256 amount, uint256 minOut, address recipient) external nonReentrant returns (uint256 received) {
+        if (msg.sender != address(fees) || recipient != address(fees) || amount == 0 || minOut == 0) {
+            revert Unauthorized();
+        }
+        if (amount > maxSellBatch()) revert InvalidValue();
+        if (minOut < quoteSell(amount) * 9850 / 10000) revert InvalidValue();
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        selling = true;
+        received = abi.decode(manager.unlock(abi.encode(amount, minOut, recipient)), (uint256));
+        selling = false;
+    }
+
+    function _sellCallback(bytes calldata data) private returns (bytes memory) {
+        (uint256 amount, uint256 minimum, address recipient) = abi.decode(data, (uint256, uint256, address));
+        _observe(spot());
+        int256 delta = manager.swap(
+            key(), SwapParams(false, -int256(amount), 1461446703485210103287273052203988822378723970341), ""
+        );
+        _observe(spot());
+        int128 ethOut = int128(delta >> 128);
+        int128 tokenIn = int128(delta);
+        if (ethOut <= 0 || tokenIn >= 0 || uint256(-int256(tokenIn)) != amount) revert InsufficientBalance();
+        uint256 gross = uint256(uint128(ethOut));
+        uint256 base = gross * projectBps() / 10000;
+        uint256 network = gross * NETWORK_BPS / 10000;
+        uint256 net = gross - base - network;
+        if (net < minimum) revert InsufficientBalance();
+        manager.sync(token);
+        IERC20(token).safeTransfer(address(manager), amount);
+        manager.settle();
+        manager.take(address(0), address(this), gross);
+        heldBase += base;
+        networkCredit += network;
+        _record(true, gross);
+        (bool ok,) = recipient.call{value: net}("");
+        if (!ok) revert TransferFailed();
+        return abi.encode(net);
+    }
+
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        if (msg.sender != address(manager) || !buying) revert Unauthorized();
+        if (msg.sender != address(manager) || (!buying && !selling)) revert Unauthorized();
+        if (selling) return _sellCallback(data);
         (uint256 ethIn, uint256 minOut, address recipient) = abi.decode(data, (uint256, uint256, address));
         uint256 base = ethIn * projectBps() / 10000;
         uint256 network = ethIn * 25 / 10000;

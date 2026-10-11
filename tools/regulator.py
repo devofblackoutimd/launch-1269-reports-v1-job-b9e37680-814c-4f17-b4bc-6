@@ -6,7 +6,7 @@ BOUNDS={'EmissionBps':(200,600),'TariffBps':(1000,3000),'DemandTarget':(10,40),'
 
 def inflow_emission(current, history, runway=100):
     if len(history)!=7 or any(not math.isfinite(x) or x<0 for x in history):
-        raise ValueError('provide seven completed nonnegative daily pack ETH totals')
+        raise ValueError('provide seven completed nonnegative daily pack payment totals')
     early=sum(history[:3]);late=sum(history[-3:])
     ratio=late/early if early else (1. if late==0 else 600/350)
     target=200 if sum(history)==0 else max(200,min(600,math.floor(350*ratio)))
@@ -26,7 +26,7 @@ def propose(state):
     elif payback>10:
         desired['EmissionBps']=math.floor(values['EmissionBps']*1.1)
         # Conservative total committed daily budget includes referral, green and weekly headroom.
-        desired['EmissionBps']=min(desired['EmissionBps'],int(10000/(14*1.17)))
+        desired['EmissionBps']=min(desired['EmissionBps'],int(10000/(14*1.59)))
         desired['TariffBps']=math.ceil(values['TariffBps']*.9)
         desired['DemandTarget']=max(10,values['DemandTarget']-values['DemandTarget']//10)
         reason.append('Payback above ten days with runway room: increase mining and lower electricity.')
@@ -37,9 +37,10 @@ def propose(state):
     if loss>800:
         desired['PositiveWeight']=math.floor(values['PositiveWeight']*1.1)
         reason.append('Event losses approach ten percent: favor positive events and reduce severity.')
-    # Seven completed UTC days, ETH actually paid for packs. Token recycling is not fresh inflow.
-    if 'packSales7DaysETH' in state:
-        history=state['packSales7DaysETH']
+    # Seven completed UTC days of wallet-funded token packs. Credit recycling is excluded.
+    # Legacy ETH field is retained solely for historical v3.4 input compatibility.
+    if 'packSales7DaysTokens' in state or 'packSales7DaysETH' in state:
+        history=state.get('packSales7DaysTokens',state.get('packSales7DaysETH'))
         desired['EmissionBps']=inflow_emission(values['EmissionBps'],history,runway)
         reason.append('Emission follows the last-three/first-three-day pack inflow ratio within a seven-day window; daily movement is bounded.')
     else:
@@ -53,7 +54,7 @@ def propose(state):
     kinds=['Green','Cheap'] if loss>800 or runway<14 else ['Calm','Green']
     return dict(dryRun=True,runwayDays=None if math.isinf(runway) else runway,proposals=output,
                 nextTwoEpochs=[dict(epoch=state['epoch']+i+1,kind=k,severity=5000 if loss>800 else 10000,randomNumber='operator must supply before shift',letter=' '.join(reason) or 'Maintain bounded conditions.') for i,k in enumerate(kinds)],
-                operatorActions=['Flush held hook fees after the one-time bind.', 'Capture each shifted epoch, paid receipt and starter entropy before native block history expires.', 'Advance epochs without scanning farms; owners/sponsors settle each farm in chunks of at most eight epochs.', 'Use gas reimbursement caps and heartbeat balance when quoting useful keeper work.', 'Complete the week for each farm before its seven-day grace deadline; prepare once and finalize the bounded lottery afterward.', 'Pay IMD schedule top-ups from an external wallet; heartbeat ETH has no administrative exit.', 'Inspect TWAP, available pool excluding locked endowment, realized ETH payback and weekly loss before signing.'],
+                operatorActions=['Flush held hook fees after the one-time bind; execute eligible depth-limited token sales and separate season-pot buys.', 'Capture each shifted epoch, paid receipt, starter and enhancement entropy before native block history expires.', 'Advance epochs without scanning farms; owners/sponsors settle each farm in chunks of at most eight epochs.', 'Use gas reimbursement caps and heartbeat balance when quoting useful keeper work.', 'Complete the week for each farm before its seven-day grace deadline; prepare once and finalize the bounded lottery afterward.', 'Pay IMD schedule top-ups from an external wallet; heartbeat ETH has no administrative exit.', 'Inspect TWAP, available pool excluding locked endowment, realized ETH payback and weekly loss before signing.'],
                 operations=operations(state))
 
 def operations(state):

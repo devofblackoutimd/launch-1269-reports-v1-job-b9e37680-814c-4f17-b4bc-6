@@ -41,7 +41,7 @@ contract RegressionTest is DeferredEntryTest {
         assertEq(d.items.data(another).holder, alice);
     }
 
-    function testEmptyEpochResetsScrapRateAndAllowance() public {
+    function testEmptyEpochPreservesLastSettledRateButResetsScrapAllowance() public {
         fund(1_000_000 ether);
         payPack(alice);
         place(alice, 0, 0, 0);
@@ -56,7 +56,7 @@ contract RegressionTest is DeferredEntryTest {
         step();
         calmNext();
         step();
-        assertEq(d.rewards.lastYieldPerHash(), 0);
+        assertGt(d.rewards.lastYieldPerHash(), 0);
         assertEq(d.rewards.scrapAllowance(), 0);
     }
 
@@ -69,7 +69,7 @@ contract RegressionTest is DeferredEntryTest {
         calmNext();
         step();
         (uint256 raw,,,) = d.rewards.shares(2, alice);
-        assertEq(raw, 5000);
+        assertEq(raw, 10000);
         uint256 previous = d.items.data(id).durability;
         vm.prank(alice);
         d.farm.repair(id, true);
@@ -77,7 +77,7 @@ contract RegressionTest is DeferredEntryTest {
         step();
         (uint256 raw3, uint256 productive,,) = d.rewards.shares(3, alice);
         assertEq(raw3, 10000);
-        assertEq(productive, 10000 * previous / 10000);
+        assertEq(productive, 10000); // Both snapshots remain in the top output tier.
     }
 
     function testCableRepairRestoresOnlyRemainingHalfEpoch() public {
@@ -102,7 +102,7 @@ contract RegressionTest is DeferredEntryTest {
         calmNext();
         step();
         (, uint256 productive,,) = d.rewards.shares(3, alice);
-        assertEq(productive, 6000 * 9950 / 10000 / 2);
+        assertEq(productive, 6000 / 2);
         calmNext();
         step();
         (, productive,,) = d.rewards.shares(4, alice);

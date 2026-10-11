@@ -13,8 +13,8 @@ contract BountiesTest is BaseTest {
         super.setUp();
         keeper = makeAddr("public keeper");
         vm.deal(address(d.packs), 100 ether);
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 50 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 50 ether}();
     }
 
     function _close() private {
@@ -190,8 +190,8 @@ contract BountiesTest is BaseTest {
                 vm.prank(address(d.rewards));
                 d.fees.payBounty(keeper);
             }
-            vm.prank(address(d.packs));
-            d.fees.depositPack{value: 50}();
+            vm.prank(address(market));
+            d.fees.depositSellTax{value: 50}();
             uint256 old = d.fees.credit(keeper);
             vm.prank(senders[i]);
             d.fees.payWork(keeper, kinds[i], 1, 100_000);

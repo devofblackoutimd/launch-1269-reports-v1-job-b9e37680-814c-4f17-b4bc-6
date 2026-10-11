@@ -78,7 +78,7 @@ contract HookBindingTest is BaseTest {
         assertEq(hook.heldSellTax(), 0);
         assertEq(f.credit(team), base / 2 + surcharge * 1000 / 10000);
         assertEq(f.heartbeatBalance(), surcharge * 200 / 10000);
-        assertEq(f.credit(team) + f.heartbeatBalance() + f.rewardETH(), base + surcharge);
+        assertEq(f.credit(team) + f.heartbeatBalance() + f.rewardETH() + f.potETH(), base + surcharge);
         assertEq(address(hook).balance, networkDue);
         hook.withdrawNetwork();
         assertEq(network.balance, networkDue);

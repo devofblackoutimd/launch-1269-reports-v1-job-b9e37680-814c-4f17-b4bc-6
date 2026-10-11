@@ -16,9 +16,9 @@ contract ReviewV34Test is BaseTest {
         fund(1_000_000 ether);
         uint256 closing = d.rewards.epochEnd();
         vm.warp(closing - 8);
-        place(alice, 0, 0, 0); // Unpaid common compute: 5,000 full-epoch hash.
+        place(alice, 0, 0, 0); // Unpaid common compute: 10,000 full-epoch hash.
         assertEq(d.rewards.entrySeconds(1, alice), 8);
-        assertEq(d.rewards.entryWeight(1, alice), 1);
+        assertEq(d.rewards.entryWeight(1, alice), 3);
 
         // Without the entry rounding fix, floor(5,500 * 8 / 21,600) = 2 productive
         // hash exceeds floor(1 * 110%) = 1 reserved hash, permanently reverting settle.

@@ -9,7 +9,7 @@ import "../src/lib/Errors.sol";
 
 contract RegistryTest is BaseTest {
     function testAllModulePinsMatchExactPinnedCompilerArtifacts() public view {
-        string[10] memory names = [
+        string[14] memory names = [
             "RewardPool",
             "FarmRewards",
             "FarmCore",
@@ -19,12 +19,17 @@ contract RegistryTest is BaseTest {
             "FeeRouter",
             "GridOperator",
             "Season",
-            "FarmEngine"
+            "FarmEngine",
+            "Economy",
+            "Enhancement",
+            "Civic",
+            "Billboards"
         ];
-        for (uint256 i; i < 10; ++i) {
+        for (uint256 i; i < 14; ++i) {
+            assertLe(d.registry.module(i).code.length, 24576, "runtime must fit EIP-170");
             assertEq(d.registry.creationCodeHash(i), keccak256(vm.getCode(string.concat(names[i], ".sol:", names[i]))));
         }
-        assertEq(d.registry.registered(), 10);
+        assertEq(d.registry.registered(), 14);
         assertEq(address(d.rewards.registry()), address(d.registry));
         assertEq(address(d.pool.registry()), address(d.registry));
         assertEq(d.registry.module(0), address(d.pool));
@@ -53,7 +58,7 @@ contract RegistryTest is BaseTest {
         vm.expectRevert(InvalidValue.selector);
         r.register(0, 5, 0, abi.encodePacked(code, bytes1(0x00)));
         vm.expectRevert(InvalidValue.selector);
-        r.register(10, 5, 0, code);
+        r.register(14, 5, 0, code);
         vm.expectRevert(InvalidValue.selector);
         r.register(0, 5, 8, code);
         // Same canonical creation code, but a different graph, cannot enroll into this graph.
@@ -94,8 +99,8 @@ contract RegistryTest is BaseTest {
         assertLt(runtime.length, 65536);
 
         address attacker = makeAddr("storage poisoner");
-        // ReentrancyGuard is slot0, then rewardETH, heartbeatBalance, lastBuy, and the credit mapping at slot4.
-        bytes32 creditSlot = keccak256(abi.encode(attacker, uint256(4)));
+        // Constructor-only registry slot0, guard1, token queues2/3, pot4, sell5/6, ETH7/8, buy9, credits10.
+        bytes32 creditSlot = keccak256(abi.encode(attacker, uint256(10)));
         // Seed storage, copy the exact legitimate runtime starting at offset80, then return it.
         bytes memory poisonedInit = abi.encodePacked(
             hex"7f",
@@ -112,7 +117,7 @@ contract RegistryTest is BaseTest {
         );
         address fake = canonical.deploy(5, 1, poisonedInit);
         assertEq(fake.codehash, genuine.codehash, "runtime hashes are indistinguishable");
-        assertEq(address(FeeRouter(payable(fake)).registry()), address(r));
+        assertEq(address(FeeRouter(payable(fake)).registry()), address(0), "runtime copy lacks constructor binding");
         assertEq(FeeRouter(payable(fake)).credit(attacker), 1 ether);
 
         vm.expectRevert(InvalidValue.selector);

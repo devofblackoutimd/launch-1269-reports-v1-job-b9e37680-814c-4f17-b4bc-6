@@ -12,6 +12,10 @@ import {PackSale} from "../src/PackSale.sol";
 import {StarterClaim} from "../src/StarterClaim.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {GridOperator} from "../src/GridOperator.sol";
+import {Economy} from "../src/Economy.sol";
+import {Enhancement} from "../src/Enhancement.sol";
+import {Billboards} from "../src/Billboards.sol";
+import {Civic} from "../src/Civic.sol";
 import {Season} from "../src/Season.sol";
 import "../src/lib/Errors.sol";
 
@@ -70,6 +74,10 @@ contract Deploy is Script {
         Season season;
         FarmEngine engine;
         GameRegistry registry;
+        Economy economy;
+        Enhancement enhancement;
+        Civic civic;
+        Billboards billboards;
     }
 
     function deploy(Config memory c) public returns (Deployment memory d) {
@@ -107,7 +115,7 @@ contract Deploy is Script {
                 )
             )
         );
-        string[10] memory names = [
+        string[14] memory names = [
             "RewardPool",
             "FarmRewards",
             "FarmCore",
@@ -117,10 +125,14 @@ contract Deploy is Script {
             "FeeRouter",
             "GridOperator",
             "Season",
-            "FarmEngine"
+            "FarmEngine",
+            "Economy",
+            "Enhancement",
+            "Civic",
+            "Billboards"
         ];
-        address[10] memory modules;
-        for (uint256 i; i < 10; ++i) {
+        address[14] memory modules;
+        for (uint256 i; i < 14; ++i) {
             bytes memory code = vm.getCode(string.concat(names[i], ".sol:", names[i]));
             uint64 launchNumber = i < 6 ? 1 : 2;
             uint256 index = i < 6 ? i + 2 : i - 6;
@@ -137,5 +149,9 @@ contract Deploy is Script {
         d.grid = GridOperator(modules[7]);
         d.season = Season(modules[8]);
         d.engine = FarmEngine(modules[9]);
+        d.economy = Economy(modules[10]);
+        d.enhancement = Enhancement(modules[11]);
+        d.civic = Civic(modules[12]);
+        d.billboards = Billboards(modules[13]);
     }
 }

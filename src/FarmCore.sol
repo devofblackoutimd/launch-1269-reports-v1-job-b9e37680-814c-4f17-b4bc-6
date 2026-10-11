@@ -12,6 +12,10 @@ import {FarmEngine} from "./FarmEngine.sol";
 import {FarmItems} from "./FarmItems.sol";
 import {Params} from "./Params.sol";
 import {GridOperator} from "./GridOperator.sol";
+import {Economy} from "./Economy.sol";
+import {Enhancement} from "./Enhancement.sol";
+import {FeeRouter} from "./FeeRouter.sol";
+import {EconomyMath} from "./lib/EconomyMath.sol";
 import {ItemMath} from "./lib/ItemMath.sol";
 import {IMarket} from "./interfaces/Interfaces.sol";
 import {IRewards, ISeason} from "./interfaces/IGame.sol";
@@ -43,6 +47,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         uint256 drops;
         uint64 paidXpDay;
         uint256 paidXpToday;
+        uint16 activeBoost;
     }
 
     /// @notice Paid XP (packs and spending) per farm per UTC day. Activity XP is not capped.
@@ -60,6 +65,76 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
     event Spent(address indexed player, uint8 kind, uint256 paid, uint256 nominal);
     event Scrapped(address indexed player, uint256 indexed id, uint256 earned);
     event Active(address indexed player, uint256 indexed epoch, uint256 gross, uint256 net);
+
+    mapping(address => mapping(uint256 => bool)) public purchasedRoom;
+    mapping(address => uint16) public autoRepairThreshold;
+    event AutoRepairSet(address indexed player, uint256 threshold);
+    event RoomPurchased(address indexed player, uint256 room, uint256 price);
+
+    function economy() public view returns (Economy) {
+        return Economy(registry.module(10));
+    }
+
+    function enhancement() public view returns (Enhancement) {
+        return Enhancement(registry.module(11));
+    }
+
+    function _boost(address p, uint256 at) private view returns (uint256) {
+        return economy().boostAt(p, at);
+    }
+
+    function civicPurchase(address p, uint256 cost) external nonReentrant {
+        if (msg.sender != registry.module(12)) revert Unauthorized();
+        _prepare(p);
+        farms[p].paid++;
+        _paidXp(p, 25);
+        _sync(p);
+        season().recordSpend(p, cost, true);
+    }
+
+    function syncFor(address p) external nonReentrant {
+        if (msg.sender != registry.module(10)) revert Unauthorized();
+        _prepare(p);
+    }
+
+    function buyRoom(uint256 room, bool wallet) external nonReentrant {
+        _prepare(msg.sender);
+        if (room == 0 || room > 3 || !roomEligible(msg.sender, room) || purchasedRoom[msg.sender][room]) {
+            revert InvalidValue();
+        }
+        uint256 price = economy().roomQuote(msg.sender, room);
+        _charge(msg.sender, price, wallet, 5);
+        purchasedRoom[msg.sender][room] = true;
+        emit RoomPurchased(msg.sender, room, price);
+    }
+
+    function setAutoRepair(bool enabled, uint16 threshold) external nonReentrant {
+        _prepare(msg.sender);
+        if (threshold == 0) threshold = 8000;
+        if (threshold > 10000 || threshold < 2000) revert InvalidValue();
+        autoRepairThreshold[msg.sender] = enabled ? threshold : 0;
+        emit AutoRepairSet(msg.sender, autoRepairThreshold[msg.sender]);
+    }
+
+    function autoRepair(address p, uint256 e) external {
+        if (msg.sender != address(rewards())) revert Unauthorized();
+        uint256 threshold = autoRepairThreshold[p];
+        if (threshold == 0) return;
+        uint256 paid = economy().autoRepair(p, threshold, farms[p].loadout);
+        if (paid != 0) {
+            season().recordRepair(p, (rewards().epochTime(e) - registry.launchTime()) / 7 days, paid);
+            _paidXp(p, paid * 25 / economy().farmDaily(p));
+            emit Spent(p, 0, paid, paid);
+        }
+    }
+
+    function prepareEnhancement(address p, uint256 id, uint256 cost, bool wallet) external nonReentrant {
+        if (msg.sender != address(enhancement())) revert Unauthorized();
+        _prepare(p);
+        FarmItems.Item memory x = items().data(id);
+        if (x.holder != p || x.equipped || _locked(p, id)) revert InvalidValue();
+        _charge(p, cost, wallet, 1);
+    }
 
     constructor(address registry_) GameModule(registry_) {}
 
@@ -181,11 +256,15 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         return 1;
     }
 
-    function roomUnlocked(address p, uint256 room) public view returns (bool) {
+    function roomEligible(address p, uint256 room) public view returns (bool) {
         if (room == 0) return true;
         if (room == 1) return farms[p].born != 0 && block.timestamp >= farms[p].born + 3 days;
         if (room == 2) return level(p) >= 7;
         return room == 3 && level(p) >= 10;
+    }
+
+    function roomUnlocked(address p, uint256 room) public view returns (bool) {
+        return room == 0 || (roomEligible(p, room) && purchasedRoom[p][room]);
     }
 
     function rooms(address p) public view returns (uint256 n) {
@@ -219,7 +298,12 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
     }
 
     function _sync(address p) private {
-        rewards().setWeight(p, engine().allocationHash(farms[p].loadout, farms[p].paid != 0));
+        rewards()
+            .setWeight(
+                p,
+                engine().allocationHash(farms[p].loadout, farms[p].paid != 0) * (10000 + _boost(p, block.timestamp))
+                    / 10000
+            );
     }
 
     function _roll(address p, uint256 e) private {
@@ -228,6 +312,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         f.active = f.loadout;
         f.activeEpoch = uint64(e);
         f.activePaid = f.paid != 0;
+        f.activeBoost = uint16(_boost(p, rewards().epochTime(e)));
         f.activeTheftUntil = f.theftUntil;
         f.routerRepairBps = 0;
         for (uint256 i; i < 24; ++i) {
@@ -269,7 +354,9 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         if (!roomUnlocked(msg.sender, room) || slot >= 6) revert InvalidValue();
         Farm storage f = farms[msg.sender];
         FarmItems.Item memory x = items().data(id);
-        if (x.holder != msg.sender || x.equipped || f.loadout[room * 6 + slot] != 0) revert InvalidValue();
+        if (x.holder != msg.sender || x.equipped || enhancement().pending(id) != 0 || f.loadout[room * 6 + slot] != 0) {
+            revert InvalidValue();
+        }
         uint256 lev = level(msg.sender);
         if ((x.rarity == 2 && lev < 3) || (x.rarity == 3 && lev < 5) || (x.rarity == 4 && lev < 10)) {
             revert InvalidValue();
@@ -285,7 +372,12 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         f.loadout[room * 6 + slot] = id;
         items().equip(msg.sender, id);
         _sync(msg.sender);
-        if (rewards().beginMining(msg.sender, engine().allocationHash(f.loadout, f.paid != 0))) {
+        if (rewards()
+                .beginMining(
+                    msg.sender,
+                    engine().allocationHash(f.loadout, f.paid != 0) * (10000 + _boost(msg.sender, block.timestamp))
+                        / 10000
+                )) {
             // Freeze the first installed loadout for this epoch; later edits apply next epoch.
             f.activeEpoch = 0;
             _roll(msg.sender, rewards().epoch());
@@ -341,11 +433,8 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         } else {
             paid = rewards().spend(p, nominal);
         }
-        uint256 rate = market().quote(1 ether);
-        if (rate == 0) revert NotConfigured();
-        uint256 value = Math.mulDiv(paid, 1 ether, rate);
-        _paidXp(p, value * 2500 / 1 ether);
-        season().recordSpend(p, value, kind == 0 || kind == 3 || kind == 4);
+        _paidXp(p, paid * 25 / economy().farmDaily(p));
+        season().recordSpend(p, paid, kind == 0 || kind == 3 || kind == 4);
         emit Spent(p, kind, paid, nominal);
     }
 
@@ -353,8 +442,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         _prepare(msg.sender);
         FarmItems.Item memory x = items().data(id);
         if (x.holder != msg.sender || x.durability == 10000) revert InvalidValue();
-        uint256 price = (10000 - x.durability) * ItemMath.baseHash(x.rarity) * params().get(Params.Key.RepairBps)
-            * 1 ether / 10_000_000;
+        uint256 price = economy().repairQuote(id);
         _charge(msg.sender, price, wallet, 0);
         items().maintain(id, 10000, x.overclock);
     }
@@ -363,76 +451,78 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         _prepare(msg.sender);
         Farm storage f = farms[msg.sender];
         if (f.theftUntil <= rewards().epoch()) revert InvalidValue();
-        _charge(msg.sender, params().get(Params.Key.MergePrice), wallet, 0);
+        _charge(msg.sender, economy().farmDaily(msg.sender) / 4, wallet, 0);
         f.theftUntil = 0;
         f.cableRepairedEpoch = uint64(rewards().epoch());
         f.routerRepairBps = uint16((rewards().epochEnd() - block.timestamp) * 10000 / 6 hours);
     }
 
-    function overclock(uint256 id, bool wallet) external nonReentrant {
-        _prepare(msg.sender);
-        FarmItems.Item memory x = items().data(id);
-        if (x.holder != msg.sender || x.overclock >= 5) revert InvalidValue();
-        uint256 price = params().get(Params.Key.OverclockPrice) * (uint256(x.overclock) + 1);
-        _charge(msg.sender, price, wallet, 1);
-        items().maintain(id, x.durability, x.overclock + 1);
-        _sync(msg.sender);
+    /// @notice Removed in v3.5: use Enhancement.commit and resolve.
+    function overclock(uint256, bool) external pure {
+        revert InvalidValue();
     }
 
     function expand(bool wallet) external nonReentrant {
         _prepare(msg.sender);
         uint256 n = items().expansions(msg.sender);
-        uint256 price = params().get(Params.Key.ExpansionPrice) * (n + 1) * (n + 1);
+        uint256 price = economy().farmDaily(msg.sender) * (n + 1) * (n + 1);
         _charge(msg.sender, price, wallet, 2);
         items().expand(msg.sender);
     }
 
     function buyTokenPack(bool wallet) external nonReentrant returns (uint256 id) {
         _prepare(msg.sender);
-        uint256 price = market().quote(ITokenPacks(packs()).price()) * 9000 / 10000;
-        _charge(msg.sender, price, wallet, 3);
+        uint256 price = ITokenPacks(packs()).price();
+        _splitCharge(msg.sender, price, wallet);
         farms[msg.sender].paid++;
         _sync(msg.sender);
         _paidXp(msg.sender, 25);
         rewards().recordSales(1);
+        season().recordSpend(msg.sender, price, true);
         id = ITokenPacks(packs()).tokenPack(msg.sender);
+    }
+
+    function _splitCharge(address p, uint256 amount, bool wallet) private {
+        address router = registry.module(6);
+        if (wallet) {
+            uint256 before_ = token().balanceOf(router);
+            token().safeTransferFrom(p, router, amount);
+            if (token().balanceOf(router) - before_ != amount) revert InvalidValue();
+        } else {
+            rewards().spendTo(p, amount, router);
+        }
+        FeeRouter(payable(router)).routeTokens(amount);
     }
 
     function lobby(uint256 amount, bool wallet) external nonReentrant {
         _prepare(msg.sender);
-        uint256 paid = _charge(msg.sender, amount, wallet, 4);
-        grid().tokenLobby(msg.sender, Math.mulDiv(paid, 1 ether, market().quote(1 ether)));
+        if (amount < economy().lobbyQuote(msg.sender)) revert InvalidValue();
+        _splitCharge(msg.sender, amount, wallet);
+        season().recordSpend(msg.sender, amount, true);
+        grid().tokenLobby(msg.sender, amount);
     }
 
     function scrap(uint256 id, uint256 minimum) external nonReentrant {
         _prepare(msg.sender);
         FarmItems.Item memory x = items().data(id);
-        if (x.holder != msg.sender || x.equipped || _locked(msg.sender, id)) revert InvalidValue();
+        if (
+            x.holder != msg.sender || x.equipped || _locked(msg.sender, id) || enhancement().pending(id) != 0
+                || (x.starter && farms[msg.sender].paid == 0)
+        ) revert InvalidValue();
         uint256 hash = ItemMath.baseHash(x.rarity) * (x.kind < 3 ? 10000 : 6000) / 10000 * x.durability / 10000;
-        if (farms[msg.sender].paid == 0) hash /= 2;
         items().destroy(id);
         uint256 earned = rewards().scrap(msg.sender, hash, minimum);
         emit Scrapped(msg.sender, id, earned);
     }
 
     function roomStats(address p, uint256 room) external view returns (FarmEngine.RoomStats memory) {
-        if (room >= 4) revert InvalidValue();
         Farm storage f = farms[p];
-        FarmEngine.Snapshot memory snap;
-        snap.ids = f.loadout;
-        snap.paid = f.paid != 0;
-        snap.theftUntil = f.theftUntil;
-        for (uint256 i; i < 24; ++i) {
-            if (snap.ids[i] == 0) continue;
-            FarmItems.Item memory x = items().data(snap.ids[i]);
-            snap.clocks[i] = x.overclock;
-            snap.health[i] = x.durability;
-        }
-        return engine().stats(snap, room, false, rewards().epoch());
+        return engine().preview(f.loadout, f.theftUntil, room);
     }
 
     function process(address p, uint256 e) external returns (uint256 raw, uint256 productive, uint256 power) {
         if (msg.sender != address(rewards())) revert Unauthorized();
+        if (rewards().farmWeight(p, e) == 0) return (0, 0, 0);
         _roll(p, e);
         Farm storage f = farms[p];
         bool occupied;
@@ -447,6 +537,9 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
             FarmEngine.Snapshot(f.active, f.clocks, f.health, f.activePaid, f.activeTheftUntil, f.routerRepairBps);
         uint64 theftUntil;
         (raw, productive, power, theftUntil) = engine().process(p, e, snap);
+        raw = raw * (10000 + f.activeBoost) / 10000;
+        productive = productive * (10000 + f.activeBoost) / 10000;
+        power = power * (10000 + f.activeBoost) / 10000;
         f.theftUntil = f.cableRepairedEpoch == e && theftUntil == f.activeTheftUntil ? 0 : theftUntil;
         for (uint256 i; i < 24; ++i) {
             uint256 id = f.active[i];
@@ -482,8 +575,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         f.drops--;
         bytes32 seed = dropSeeds[msg.sender][f.drops];
         delete dropSeeds[msg.sender][f.drops];
-        (uint8 k, uint8 r) = ItemMath.draw(seed, false, false);
-        id = items().mint(msg.sender, k, r == 0 ? 0 : 1, false);
+        id = items().mintDrop(msg.sender, seed);
     }
 
     function onERC1155Received(address, address, uint256, uint256, bytes calldata) external view returns (bytes4) {

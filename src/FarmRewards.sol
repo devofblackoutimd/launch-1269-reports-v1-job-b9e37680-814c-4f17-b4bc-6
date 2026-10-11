@@ -76,6 +76,15 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     uint256 public queuedTax;
     uint256 public currentRedis;
     uint256 public lastYieldPerHash;
+    uint256 public lastAverageDaily;
+    mapping(address => uint256) public lastFarmDaily;
+    uint256 public nextActiveFarms;
+    mapping(uint256 => uint256) public districtActiveHash;
+    mapping(uint256 => uint256) public nextDistrictHash;
+    mapping(uint256 => mapping(uint256 => uint256)) public expiringDistrictHash;
+    mapping(uint256 => uint256) public expiringFarms;
+    mapping(uint256 => uint256) public activeFarmCount;
+    uint256 public constant MAX_OUTPUT_BPS = 15000;
     uint256 public scrapAllowance;
     mapping(uint256 => Epoch) public epochs;
     mapping(uint256 => mapping(uint256 => uint256)) public epochParam;
@@ -165,7 +174,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
             if (old.raw != 0) {
                 old.mining = Math.mulDiv(pool().available(), old.emission * old.miningSeconds, 40000 * EPOCH);
                 // 110% Green gross + 5% referral + 1% season = 116.5% maximum, before tariff.
-                old.budget = old.mining * 117 / 100;
+                old.budget = old.mining * 159 / 100;
                 pool().reserve(old.budget);
                 old.rewardPerHash = Math.mulDiv(old.mining, PRECISION, old.raw);
                 accRewardPerHash += old.rewardPerHash;
@@ -174,12 +183,15 @@ contract FarmRewards is GameModule, ReentrancyGuard {
                 old.spent = prize;
                 old.allocated = prize;
                 if (prize != 0) season().addPrize(week, prize);
-                lastYieldPerHash = Math.mulDiv(old.mining, 1 ether, old.raw);
+                lastYieldPerHash = Math.mulDiv(old.mining * (10000 - old.tariff) / 10000, 1 ether, old.raw);
+                if (activeFarmCount[epoch] != 0) {
+                    lastAverageDaily = old.mining * (10000 - old.tariff) / 10000 * 4 / activeFarmCount[epoch];
+                }
             } else {
                 queuedTax += old.redis;
                 old.redis = 0;
                 old.accRewardPerHash = accRewardPerHash;
-                lastYieldPerHash = 0;
+                // Preserve the last settled productive rate across empty epochs.
             }
             settledEpoch = epoch; // Globally closed; individual farm cursors are independent.
             emit EpochClosed(epoch, old.budget, old.raw);
@@ -195,6 +207,14 @@ contract FarmRewards is GameModule, ReentrancyGuard {
             delete expiring[epoch];
             emit Expired(epoch, gone);
         }
+        for (uint256 d; d < 8; ++d) {
+            nextDistrictHash[d] -= expiringDistrictHash[epoch][d];
+            delete expiringDistrictHash[epoch][d];
+            districtActiveHash[d] = nextDistrictHash[d];
+        }
+        nextActiveFarms -= expiringFarms[epoch];
+        delete expiringFarms[epoch];
+        activeFarmCount[epoch] = nextActiveFarms;
         e.raw = nextTotalHash;
         if (e.raw != 0) e.miningSeconds = EPOCH;
         e.target = params().get(Params.Key.DemandTarget) * 6;
@@ -241,16 +261,29 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     function _commit(Account storage a, address p, uint256 weight) private {
+        uint256 d = uint256(keccak256(abi.encodePacked(p))) % 8;
         if (a.weightEpoch <= epoch) {
             a.weight = a.nextWeight;
             a.weightExpiry = a.nextExpiry;
         }
         // Buckets for epochs <= current have already been applied; later buckets still hold this commitment.
         if (a.nextExpiry > epoch) {
+            if (a.nextWeight != 0) {
+                --nextActiveFarms;
+                --expiringFarms[a.nextExpiry];
+            }
+            nextDistrictHash[d] -= a.nextWeight;
+            expiringDistrictHash[a.nextExpiry][d] -= a.nextWeight;
             nextTotalHash -= a.nextWeight;
             expiring[a.nextExpiry] -= a.nextWeight;
         }
         uint256 expiry = epoch + 1 + IDLE_EPOCHS;
+        if (weight != 0) {
+            ++nextActiveFarms;
+            ++expiringFarms[expiry];
+        }
+        nextDistrictHash[d] += weight;
+        expiringDistrictHash[expiry][d] += weight;
         nextTotalHash += weight;
         expiring[expiry] += weight;
         a.nextWeight = weight;
@@ -270,6 +303,8 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         entryWeight[epoch][p] = weighted;
         entrySeconds[epoch][p] = secondsLeft;
         epochs[epoch].raw += weighted;
+        ++activeFarmCount[epoch];
+        districtActiveHash[uint256(keccak256(abi.encodePacked(p))) % 8] += weighted;
         emit MiningStarted(p, epoch, secondsLeft, weighted);
         return true;
     }
@@ -329,7 +364,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
             productive = Math.mulDiv(productive, secondsLeft, EPOCH);
             power = Math.mulDiv(power, secondsLeft, EPOCH);
             // Integer hash-time rounding must retain the same envelope as the reservation formula.
-            uint256 limit = weight * 11000 / 10000;
+            uint256 limit = weight * MAX_OUTPUT_BPS / 10000;
             if (productive > limit) {
                 power = Math.mulDiv(power, limit, productive);
                 productive = limit;
@@ -340,11 +375,13 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         if (weight != 0) {
             uint256 gross = Math.mulDiv(e.rewardPerHash, productive, PRECISION);
             uint256 electricity = Math.mulDiv(e.rewardPerHash, power, PRECISION) * e.tariff / 10000;
-            if (e.kind == GridOperator.Kind.Cheap) electricity /= 2;
+            if (e.kind == GridOperator.Kind.Cheap && uint256(keccak256(abi.encodePacked(p))) % 8 == e.district) {
+                electricity /= 2;
+            }
             uint256 tax = audit ? gross / 10 : 0;
             uint256 net = gross - tax - Math.min(electricity, gross - tax);
             uint256 redisAllocation = Math.mulDiv(e.redis, weight, e.raw);
-            uint256 redis = Math.mulDiv(e.redis, Math.min(raw, weight), e.raw);
+            uint256 redis = Math.mulDiv(e.redis, Math.min(productive, weight), e.raw);
             Account storage a = accounts[p];
             a.referralClosed = true;
             uint256 referral;
@@ -354,12 +391,14 @@ contract FarmRewards is GameModule, ReentrancyGuard {
             }
             // Use the same rounding as actual gross. Flooring a global envelope before
             // apportionment can otherwise underfund a farm by one wei and lock its cursor.
-            uint256 maxGross = Math.mulDiv(e.rewardPerHash, weight * 11000 / 10000, PRECISION);
+            uint256 maxGross = Math.mulDiv(e.rewardPerHash, weight * MAX_OUTPUT_BPS / 10000, PRECISION);
             uint256 allocation = maxGross + maxGross * 500 / 10000 + redisAllocation;
             uint256 spent = net + redis + referral;
-            // Protocol maximum combos bound productive hash by 110% of committed allocation hash.
+            // Protocol maximum district/event boosts bound productive hash by 150% of committed allocation hash.
             if (spent > allocation) revert InvalidValue();
             _credit(p, net + redis, id, e.end);
+            lastFarmDaily[p] = net * 4;
+            core().autoRepair(p, id);
             e.spent += spent;
             e.allocated += allocation;
             e.settledHash += weight;
@@ -473,11 +512,23 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         emit Claimed(msg.sender, amount, tax);
     }
 
-    function spend(address p, uint256 nominal) external onlyCore nonReentrant returns (uint256 consumed) {
-        consumed = Math.mulDiv(nominal, 10000, 10500, Math.Rounding.Ceil);
+    function spend(address p, uint256 nominal) external returns (uint256 consumed) {
+        if (msg.sender != address(core()) && msg.sender != registry.module(10)) revert Unauthorized();
+        consumed = nominal;
         _consume(p, consumed, false);
         pool().recycle(consumed);
         emit Spent(p, consumed);
+    }
+
+    function epochTime(uint256 e) external view returns (uint256) {
+        return epochs[e].start;
+    }
+
+    function spendTo(address p, uint256 amount, address to) external onlyCore {
+        if (to != registry.module(6)) revert Unauthorized();
+        _consume(p, amount, false);
+        pool().pay(to, amount);
+        emit Spent(p, amount);
     }
 
     function scrap(address p, uint256 hash, uint256 minimum) external onlyCore nonReentrant returns (uint256 amount) {

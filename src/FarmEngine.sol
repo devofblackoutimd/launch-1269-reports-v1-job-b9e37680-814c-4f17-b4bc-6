@@ -6,6 +6,7 @@ import {FarmItems} from "./FarmItems.sol";
 import {Params} from "./Params.sol";
 import {GridOperator} from "./GridOperator.sol";
 import {IRewards} from "./interfaces/IGame.sol";
+import {EconomyMath} from "./lib/EconomyMath.sol";
 import {ItemMath} from "./lib/ItemMath.sol";
 import "./lib/Errors.sol";
 
@@ -78,6 +79,19 @@ contract FarmEngine is GameModule {
         }
     }
 
+    function preview(uint256[24] memory ids, uint64 theftUntil, uint256 room) external view returns (RoomStats memory) {
+        Snapshot memory snap;
+        snap.ids = ids;
+        snap.theftUntil = theftUntil;
+        for (uint256 i; i < 24; ++i) {
+            if (ids[i] == 0) continue;
+            FarmItems.Item memory x = items().data(ids[i]);
+            snap.clocks[i] = x.overclock;
+            snap.health[i] = x.durability;
+        }
+        return stats(snap, room, false, rewards().epoch());
+    }
+
     function stats(Snapshot memory f, uint256 room, bool active, uint256 e) public view returns (RoomStats memory s) {
         s = _stats(f, room, active, e);
         // Repair restores only the remaining fraction of this epoch, including Router combos.
@@ -97,6 +111,8 @@ contract FarmEngine is GameModule {
     function _stats(Snapshot memory f, uint256 room, bool active, uint256 e) private view returns (RoomStats memory s) {
         if (room >= 4) revert InvalidValue();
         uint256 mask;
+        uint256 baseRaw;
+        uint256 baseProductive;
         uint256 tags;
         uint256[5] memory rarity;
         for (uint256 i; i < 6; ++i) {
@@ -121,11 +137,11 @@ contract FarmEngine is GameModule {
             tags |= 1 << ItemMath.tag(x.kind);
             rarity[x.rarity]++;
             uint256 raw = ItemMath.baseHash(x.rarity) * (x.kind < 3 ? 10000 : 6000) / 10000;
-            raw = raw * (10 + f.clocks[idx]) / 10;
-            if (!f.paid) raw /= 2;
-            if (f.health[idx] == 0) continue;
+            baseRaw += raw;
+            baseProductive += raw * EconomyMath.tier(f.health[idx]) / 10000;
+            raw = raw * (10000 + EconomyMath.bonus(f.clocks[idx])) / 10000;
             s.raw += raw;
-            s.productive += raw * f.health[idx] / 10000;
+            s.productive += raw * EconomyMath.tier(f.health[idx]) / 10000;
         }
         if (mask & 3 == 3) {
             s.bonus += _param(mask & 7 == 7 ? Params.Key.TripleCoreBps : Params.Key.ComputePairBps, active, e);
@@ -137,8 +153,9 @@ contract FarmEngine is GameModule {
         else if (rarity[2] >= 3) s.bonus += _param(Params.Key.EpicSetBps, active, e);
         else if (rarity[1] >= 3) s.bonus += _param(Params.Key.RareSetBps, active, e);
         s.bonus = Math.min(s.bonus, _param(Params.Key.SetCapBps, active, e));
-        s.raw = s.raw * (10000 + s.bonus) / 10000;
-        s.productive = s.productive * (10000 + s.bonus) / 10000;
+        uint256 cap = _param(Params.Key.SetCapBps, active, e);
+        s.raw = Math.min(s.raw + baseRaw * s.bonus / 10000, baseRaw * (10000 + cap) / 10000);
+        s.productive = Math.min(s.productive + baseProductive * s.bonus / 10000, baseProductive * (10000 + cap) / 10000);
         uint256 saving = (s.cold ? _param(Params.Key.ElectricityPairBps, active, e) : 0)
             + (s.offgrid ? _param(Params.Key.OffgridBps, active, e) : 0);
         s.power = s.productive * (10000 - saving) / 10000;
@@ -152,8 +169,9 @@ contract FarmEngine is GameModule {
         (GridOperator.Kind kind, uint16 severity, uint8 d, bytes32 seed, bool resolved) = rewards().eventAt(e);
         if (!resolved) revert TooEarly();
         uint256 random = uint256(keccak256(abi.encode(seed, p)));
-        bool local = uint256(keccak256(abi.encodePacked(p))) % 8 == d;
-        bool outage = local && kind == GridOperator.Kind.Outage && random % 10000 < 3000 * uint256(severity) / 10000;
+        bool local = d == 8 || uint256(keccak256(abi.encodePacked(p))) % 8 == d;
+        bool outage =
+            local && kind == GridOperator.Kind.Outage && (d == 8 || random % 10000 < 3000 * uint256(severity) / 10000);
         bool surge = local && kind == GridOperator.Kind.Surge && random % 10000 < 1000 * uint256(severity) / 10000;
         bool theft = local && kind == GridOperator.Kind.Theft && random % 10000 < 2000 * uint256(severity) / 10000;
         uint256 occupied;
@@ -192,6 +210,10 @@ contract FarmEngine is GameModule {
                 if (local && kind == GridOperator.Kind.Fire && !before_.cold) {
                     damage += 3000 * uint256(severity) / 10000 / (before_.airflow ? 2 : 1);
                 }
+                if (
+                    local && kind == GridOperator.Kind.Heatwave && x.kind >= 6 && x.kind <= 7 && !before_.airflow
+                        && !before_.cold
+                ) damage += 500;
                 f.health[idx] = uint16(f.health[idx] > damage ? f.health[idx] - damage : 0);
                 items().maintain(id, uint16(x.durability > damage ? x.durability - damage : 0), x.overclock);
                 cursor++;
@@ -205,17 +227,23 @@ contract FarmEngine is GameModule {
                 s.productive = 0;
                 s.power = 0;
             }
-            if (local && kind == GridOperator.Kind.Green) {
-                s.productive = s.productive * (10000 + uint256(severity) / 10) / 10000;
-                s.power = s.power * (10000 + uint256(severity) / 10) / 10000;
+            if (local && (kind == GridOperator.Kind.Green || kind == GridOperator.Kind.Festival)) {
+                uint256 eventBonus = kind == GridOperator.Kind.Festival
+                    ? Math.min(1500, Math.max(500, uint256(severity)))
+                    : uint256(severity) / 10;
+                s.productive = s.productive * (10000 + eventBonus) / 10000;
+                s.power = s.power * (10000 + eventBonus) / 10000;
             }
+            uint256 boost = grid().outputBonus(e, uint256(keccak256(abi.encodePacked(p))) % 8);
+            s.productive = s.productive * (10000 + boost) / 10000;
+            s.power = s.power * (10000 + boost) / 10000;
             productive += s.productive;
             power += s.power;
             for (uint256 i; i < 6; ++i) {
                 uint256 id = f.ids[r * 6 + i];
                 if (id == 0) continue;
                 FarmItems.Item memory x = items().data(id);
-                items().maintain(id, x.durability > 50 ? x.durability - 50 : 0, x.overclock);
+                items().maintain(id, x.durability > 100 ? x.durability - 100 : 0, x.overclock);
             }
         }
         theftUntil = f.theftUntil;

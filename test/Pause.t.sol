@@ -24,6 +24,7 @@ contract PauseTest is BaseTest {
     }
 
     function testSalePausedWhileEntropyClaimsWithdrawalsAndEpochsContinue() public {
+        token.transfer(alice, 50_000_000 ether);
         fund(100_000_000 ether);
         uint256 id = payPack(alice);
         place(alice, 0, 0, 0);
@@ -32,9 +33,9 @@ contract PauseTest is BaseTest {
         vm.prank(swarm);
         d.packs.pause(72 hours);
         uint256 q = d.packs.quote(1);
-        vm.expectRevert(InvalidValue.selector);
+        vm.expectRevert(TooEarly.selector);
         vm.prank(alice);
-        d.packs.openPack{value: q}(1);
+        d.packs.openPack(1);
         vm.expectRevert(TooEarly.selector);
         vm.prank(alice);
         d.farm.buyTokenPack(true);
@@ -46,6 +47,8 @@ contract PauseTest is BaseTest {
         vm.prank(alice);
         d.rewards.claim(pending);
         step();
+        (uint256 batch, uint256 minimum) = d.fees.sellBatchQuote();
+        d.fees.executeSells(batch, minimum); // Fee conversion also remains callable during a purchase pause.
         uint256 credited = d.fees.credit(team);
         assertGt(credited, 0);
         vm.prank(team);

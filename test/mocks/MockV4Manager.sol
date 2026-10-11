@@ -46,6 +46,7 @@ contract MockV4Manager is IV4PoolManager {
         require(msg.sender == unlockedBy);
         uint256 input = uint256(-p.amountSpecified);
         uint256 output = input;
+        if (!p.zeroForOne) return (int256(output) << 128) | int256(uint256(uint128(-int128(int256(input)))));
         return (int256(-int128(int256(input))) << 128) | int256(output);
     }
 
@@ -57,6 +58,8 @@ contract MockV4Manager is IV4PoolManager {
             IERC20(currency).transfer(to, amount);
         }
     }
+
+    function sync(address) external {}
 
     function settle() external payable returns (uint256) {
         return msg.value;

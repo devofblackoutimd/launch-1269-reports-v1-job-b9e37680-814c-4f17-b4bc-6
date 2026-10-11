@@ -13,30 +13,30 @@ contract DrawHarness {
 
 contract PacksTest is BaseTest {
     function testVrgdaInitialStepDecayFloorCeilingAndBulkPricing() public {
-        assertEq(d.packs.price(), 0.01 ether);
+        assertEq(d.packs.price(), 15000 ether);
         uint256 q = d.packs.quote(2);
-        assertApproxEqAbs(q, 0.0201 ether, 10);
+        assertApproxEqAbs(q, 30150 ether, 100_000_000);
         vm.prank(alice);
-        d.packs.openPack{value: q}(2);
-        assertApproxEqAbs(d.packs.price(), 0.010201 ether, 10);
+        d.packs.openPack(2);
+        assertApproxEqAbs(d.packs.price(), 15301.5 ether, 100_000_000);
         vm.warp(launch + 1 hours);
-        assertLt(d.packs.price(), 0.01 ether);
+        assertLt(d.packs.price(), 15000 ether);
         vm.warp(launch + 30 days);
-        assertEq(d.packs.price(), 0.006 ether);
-        assertEq(d.packs.priceAt(1_000_000), 0.03 ether);
+        assertEq(d.packs.price(), 7500 ether);
+        assertEq(d.packs.priceAt(1_000_000), 30000 ether);
     }
 
     function testFuzzVrgdaAlwaysBounded(uint32 sold, uint32 elapsed) public {
         vm.warp(launch + bound(elapsed, 0, 3650 days));
         uint256 p = d.packs.priceAt(sold);
-        assertGe(p, 0.006 ether);
-        assertLe(p, 0.03 ether);
+        assertGe(p, 7500 ether);
+        assertLe(p, 30000 ether);
     }
 
     function testNoWalletGlobalOrTokenPackDailyLimit() public {
         uint256 quote = d.packs.quote(200);
         vm.prank(alice);
-        uint256 id = d.packs.openPack{value: quote}(200);
+        uint256 id = d.packs.openPack(200);
         assertEq(d.packs.sold(), 200);
         (,, uint256 n,,,,,,) = d.packs.commits(id);
         assertEq(n, 200);
@@ -63,7 +63,7 @@ contract PacksTest is BaseTest {
     function testExpiryRearmsWithoutMintingAndInventoryOpeningLimit() public {
         uint256 q = d.packs.quote(6);
         vm.prank(alice);
-        uint256 id = d.packs.openPack{value: q}(6);
+        uint256 id = d.packs.openPack(6);
         vm.roll(vm.getBlockNumber() + 300);
         d.packs.resolve(id, 5);
         assertEq(d.items.inventory(alice), 0);
@@ -79,9 +79,9 @@ contract PacksTest is BaseTest {
         assertEq(d.items.capacity(alice), 20);
     }
 
-    function testTokenPackDiscountAllToPoolAndBonusWhenInternal() public {
+    function testTokenPackSameQuoteAndSplitWhenUsingWalletOrCredits() public {
         uint256 price = d.packs.price();
-        uint256 expected = market.quote(price) * 9 / 10;
+        uint256 expected = price * 88 / 100;
         uint256 before_ = token.balanceOf(address(d.pool));
         vm.prank(alice);
         d.farm.buyTokenPack(true);
@@ -92,14 +92,20 @@ contract PacksTest is BaseTest {
         step();
         calmNext();
         step();
-        uint256 nominal = market.quote(d.packs.price()) * 9 / 10;
+        for (uint256 i; i < 24; ++i) {
+            calmNext();
+            step();
+            vm.prank(alice);
+            d.farm.sync();
+        }
+        uint256 nominal = d.packs.price();
         uint256 pending = d.rewards.pending(alice);
         before_ = d.pool.available();
         vm.prank(alice);
         d.farm.buyTokenPack(false);
-        uint256 spent = (nominal * 10000 + 10499) / 10500;
+        uint256 spent = nominal;
         assertEq(pending - d.rewards.pending(alice), spent);
-        assertEq(d.pool.available() - before_, spent);
+        assertEq(d.pool.available() - before_, spent - spent / 10 - spent * 200 / 10000);
         assertEq(d.rewards.queuedTax(), 0);
     }
 

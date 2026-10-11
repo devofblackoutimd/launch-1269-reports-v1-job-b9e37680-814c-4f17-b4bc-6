@@ -2,6 +2,8 @@
 pragma solidity 0.8.26;
 import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Economy} from "./Economy.sol";
+import {Civic} from "./Civic.sol";
 import {Params} from "./Params.sol";
 import {FeeRouter} from "./FeeRouter.sol";
 import {ChainClock} from "./lib/ChainClock.sol";
@@ -17,7 +19,9 @@ contract GridOperator is GameModule, ReentrancyGuard {
         Theft,
         Audit,
         Green,
-        Cheap
+        Cheap,
+        Heatwave,
+        Festival
     }
 
     struct Plan {
@@ -44,6 +48,8 @@ contract GridOperator is GameModule, ReentrancyGuard {
         uint64 at;
     }
 
+    mapping(uint256 => uint8) public cityEvent;
+    mapping(uint256 => mapping(uint256 => uint256)) public outputBonus;
     mapping(uint256 => Plan) private plans;
     mapping(uint256 => EventData) private events;
     mapping(uint256 => Lobby) public lobbies;
@@ -86,39 +92,51 @@ contract GridOperator is GameModule, ReentrancyGuard {
         if (msg.sender != swarmWallet()) revert Unauthorized();
         uint256 current = rewards().epoch();
         if (
-            e <= current || e > current + 2 || severity < 5000 || severity > 10000 || bytes(letter).length == 0
-                || bytes(letter).length > 1024
+            uint256(kind) > uint256(Kind.Cheap) || e <= current || e > current + 2 || severity < 5000
+                || severity > 10000 || bytes(letter).length == 0 || bytes(letter).length > 1024
         ) revert InvalidValue();
         if (plans[e].submitted) revert AlreadyDone();
         plans[e] = Plan(kind, severity, number, letter, true);
         emit PlanSubmitted(e, kind, severity, number, letter);
     }
 
-    /// @dev Rational interpolation between exact three-day halvings, with bounded work.
+    /// @notice Lobby contributions expire after three days; new spending extends the district boost.
     function lobbyAmount(uint256 d) public view returns (uint256) {
         Lobby memory l = lobbies[d];
-        uint256 dt = block.timestamp - l.at;
-        uint256 halves = dt / 3 days;
-        if (halves >= 128) return 0;
-        uint256 a = l.amount >> halves;
-        return a * 3 days / (3 days + dt % 3 days);
+        return block.timestamp < uint256(l.at) + 3 days ? l.amount : 0;
+    }
+
+    function gridStability(uint256 d) public view returns (uint256) {
+        if (d >= 8) revert InvalidValue();
+        Economy eco = Economy(registry.module(10));
+        uint256 total;
+        uint256 largest;
+        uint256[8] memory stake;
+        for (uint256 i; i < 8; ++i) {
+            stake[i] = eco.districtStake(i);
+            total += stake[i];
+            if (stake[i] > largest) largest = stake[i];
+        }
+        uint256 stable = 10000;
+        if (total != 0) {
+            uint256 average = total / 8;
+            if (stake[d] >= average) {
+                stable = largest == average ? 10000 : 10000 + 5000 * (stake[d] - average) / (largest - average);
+            } else {
+                stable = average == 0 ? 10000 : 5000 + 5000 * stake[d] / average;
+            }
+        }
+        uint256 lobby = lobbyAmount(d);
+        stable += 5000 * lobby / (eco.averageDaily() * 5 + lobby);
+        return stable > 15000 ? 15000 : stable;
     }
 
     function lobbyWeight(uint256 d) public view returns (uint256) {
-        uint256 a = lobbyAmount(d);
-        uint256 reduction = a * params().get(Params.Key.LobbyKBps) / (1 ether + a);
-        uint256 w = 10000 - reduction;
-        uint256 floor = params().get(Params.Key.LobbyMinWeight);
-        return w < floor ? floor : w;
+        return 20000 - gridStability(d);
     }
 
-    function lobbyETH() external payable nonReentrant {
-        if (msg.value == 0 || !core().hasFarm(msg.sender) || !rewards().live() || !rewards().ready()) {
-            revert InvalidValue();
-        }
-        _lobby(msg.sender, msg.value);
-        season().recordSpend(msg.sender, msg.value, true);
-        fees().depositLobby{value: msg.value}();
+    function lobbyETH() external payable {
+        revert InvalidValue();
     }
 
     function tokenLobby(address p, uint256 value) external {
@@ -138,8 +156,11 @@ contract GridOperator is GameModule, ReentrancyGuard {
         if (x.target != 0) revert AlreadyDone();
         x.target = uint64(ChainClock.number() + 1);
         x.started = uint64(block.timestamp);
+        Civic civic = Civic(registry.module(12));
+        cityEvent[e] = civic.consumeCityEvent();
         for (uint256 d; d < 8; ++d) {
             x.weights[d] = lobbyWeight(d);
+            outputBonus[e][d] = civic.outputBonus(d);
         }
     }
 
@@ -188,7 +209,7 @@ contract GridOperator is GameModule, ReentrancyGuard {
         uint256[8] memory weights;
         uint256 sum;
         for (uint256 d; d < 8; ++d) {
-            uint256 w = k == Kind.Green ? 20000 - x.weights[d] : x.weights[d];
+            uint256 w = (k == Kind.Green || k == Kind.Cheap || k == Kind.Festival) ? 20000 - x.weights[d] : x.weights[d];
             if (k == Kind.Outage && lastOutage[d] != 0 && x.started < lastOutage[d] + 2 days) w = 0;
             weights[d] = w;
             sum += w;
@@ -204,6 +225,11 @@ contract GridOperator is GameModule, ReentrancyGuard {
                 }
                 point -= weights[d];
             }
+        }
+        if (cityEvent[e] != 0) {
+            k = cityEvent[e] == 1 ? Kind.Green : Kind.Outage;
+            x.district = 8;
+            x.severity = 10000;
         }
         x.kind = k;
         x.resolved = true;

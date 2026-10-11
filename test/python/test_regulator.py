@@ -23,3 +23,8 @@ class RegulatorTest(unittest.TestCase):
     def test_invalid_policy_rejected(self):
         s=r.example();s['pacePolicy']='unknown'
         with self.assertRaises(ValueError):r.propose(s)
+
+    def test_token_pack_history_takes_precedence_over_historical_eth(self):
+        s=r.example();s.update(availableTokens=20_000_000,packSales7DaysTokens=[1,1,1,1,2,2,2],packSales7DaysETH=[10,10,10,1,0,0,0])
+        changes={x['key']:x['proposed'] for x in r.propose(s)['proposals']}
+        self.assertGreater(changes['EmissionBps'],350)

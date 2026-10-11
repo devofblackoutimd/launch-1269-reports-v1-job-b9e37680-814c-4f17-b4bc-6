@@ -130,6 +130,27 @@ contract V4IntegrationTest is BaseTest {
         assertEq(day, 0);
     }
 
+    function testRealV4SystemSalesUseDepthTwapNormalFeesAndConserveTokens() public {
+        uint256 beforePool = token.balanceOf(address(d.pool));
+        token.transfer(address(router), 10 ether);
+        vm.prank(address(d.packs));
+        router.routeTokens(10 ether);
+        assertEq(token.balanceOf(address(d.pool)) - beforePool, 8.8 ether);
+        (uint256 amount, uint256 minimum) = router.sellBatchQuote();
+        assertGt(amount, 0);
+        assertLe(amount, 0.1 ether);
+        uint256 beforeRouter = token.balanceOf(address(router));
+        uint256 beforeManager = token.balanceOf(address(manager));
+        uint256 received = router.executeSells(amount, minimum);
+        assertEq(beforeRouter - token.balanceOf(address(router)), amount);
+        assertEq(token.balanceOf(address(manager)) - beforeManager, amount);
+        assertGe(received, minimum);
+        assertGt(hook.networkCredit(), 0);
+        assertEq(hook.heldSellTax(), 0, "system sale has no sell surcharge");
+        assertEq(router.credit(team) + router.heartbeatBalance(), received);
+        assertEq(address(router).balance, received);
+    }
+
     function testRealV4ManipulatedSpotCannotInstantlySetBuybackQuote() public {
         uint256 quote = hook.quote(1 ether);
         manager.unlock(abi.encode(uint8(2), uint256(100 ether)));
@@ -138,9 +159,9 @@ contract V4IntegrationTest is BaseTest {
     }
 
     function testRealV4SmallBuyPaysPositiveKeeperMargin() public {
-        vm.deal(address(d.packs), 1 ether);
-        vm.prank(address(d.packs));
-        router.depositPack{value: 1 ether}();
+        vm.deal(address(hook), 2 ether);
+        vm.prank(address(hook));
+        router.depositSellTax{value: 2 ether}();
         uint256 q = hook.quote(0.5 ether) * 985 / 1000;
         uint256 beforeCredit = router.credit(address(this));
         uint256 start = gasleft();

@@ -40,6 +40,8 @@ contract LazyAccountingTest is DeferredEntryTest {
             if (!f.item[i].destroyed) s.mask |= 1 << f.item[i].kind;
         }
         bool locked = s.mask & 1280 == 1280;
+        uint256 baseRaw;
+        uint256 baseProductive;
         uint256 tags;
         uint256[5] memory rarities;
         for (uint256 i; i < 6; ++i) {
@@ -48,11 +50,16 @@ contract LazyAccountingTest is DeferredEntryTest {
             uint256 tag = x.kind < 3 ? 0 : x.kind < 6 ? 1 : x.kind < 8 ? 2 : x.kind == 8 ? 3 : 4;
             tags |= 1 << tag;
             rarities[x.rarity]++;
-            if (x.health == 0) continue;
             uint256 raw = _hash(x.rarity) * (x.kind < 3 ? 10000 : 6000) / 10000;
-            raw = raw * (10 + x.clock) / 10;
+            uint256[6] memory enhancement = [uint256(0), 300, 600, 1000, 1400, 1900];
+            baseRaw += raw;
+            uint256 tier = x.health >= 8000
+                ? 10000
+                : x.health >= 6000 ? 8500 : x.health >= 4000 ? 6500 : x.health >= 2000 ? 4000 : 0;
+            baseProductive += raw * tier / 10000;
+            raw = raw * (10000 + enhancement[x.clock]) / 10000;
             s.raw += raw;
-            s.productive += raw * x.health / 10000;
+            s.productive += raw * tier / 10000;
         }
         uint256 bonus;
         if (s.mask & 3 == 3) bonus += s.mask & 7 == 7 ? 2000 : 1000;
@@ -62,9 +69,11 @@ contract LazyAccountingTest is DeferredEntryTest {
         else if (rarities[3] >= 3) bonus += 2000;
         else if (rarities[2] >= 3) bonus += 1000;
         else if (rarities[1] >= 3) bonus += 500;
-        if (bonus > 4000) bonus = 4000;
-        s.raw = s.raw * (10000 + bonus) / 10000;
-        s.productive = s.productive * (10000 + bonus) / 10000;
+        if (bonus > 10000) bonus = 10000;
+        s.raw += baseRaw * bonus / 10000;
+        s.productive += baseProductive * bonus / 10000;
+        if (s.raw > baseRaw * 2) s.raw = baseRaw * 2;
+        if (s.productive > baseProductive * 2) s.productive = baseProductive * 2;
         uint256 savings;
         if (s.mask & 136 == 136) savings += 1500;
         if (s.mask & 48 == 48) savings += 2000;
@@ -124,13 +133,13 @@ contract LazyAccountingTest is DeferredEntryTest {
         }
         uint256 gross = snap.rewardPerHash * after_.productive / 1e27;
         uint256 electricity = snap.rewardPerHash * after_.power / 1e27 * snap.tariff / 10000;
-        if (snap.kind == GridOperator.Kind.Cheap) electricity /= 2;
+        if (snap.kind == GridOperator.Kind.Cheap && local) electricity /= 2;
         uint256 audit = snap.kind == GridOperator.Kind.Audit && before_.raw > snap.auditThreshold ? gross / 10 : 0;
         f.earned += gross - audit - (electricity > gross - audit ? gross - audit : electricity);
         for (uint256 i; i < 6; ++i) {
             if (!f.item[i].destroyed) {
                 uint16 health = f.item[i].health;
-                f.item[i].health = health > 50 ? health - 50 : 0;
+                f.item[i].health = health > 100 ? health - 100 : 0;
             }
         }
         return (f, before_, after_);
@@ -150,7 +159,7 @@ contract LazyAccountingTest is DeferredEntryTest {
         for (uint256 p; p < 2; ++p) {
             uint256 quote = d.packs.quote(112);
             vm.prank(players[p]);
-            d.packs.openPack{value: quote}(112);
+            d.packs.openPack(112);
             veteran(players[p]);
             uint8[12] memory kinds;
             for (uint8 k; k < 12; ++k) {
@@ -385,11 +394,12 @@ contract LazyAccountingTest is DeferredEntryTest {
         fund(115); // 115 * 350 / 40000 = one wei of mining.
         uint256 quote = d.packs.quote(112);
         vm.prank(alice);
-        d.packs.openPack{value: quote}(112);
+        d.packs.openPack(112);
         veteran(alice);
         payPack(bob);
         place(alice, 0, 3, 0); // 250000 / 260000 of total allocation.
         place(bob, 0, 0, 0);
+        deal(address(token), address(d.pool), 115); // Isolate the one-wei rounding case after token pack inflows.
         _closeOnly();
         vm.mockCall(
             address(d.grid),

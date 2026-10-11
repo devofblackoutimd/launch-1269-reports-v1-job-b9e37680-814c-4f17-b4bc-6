@@ -64,12 +64,23 @@ abstract contract BaseTest is Test {
         vm.deal(alice, 10000 ether);
         vm.deal(bob, 10000 ether);
         vm.deal(address(this), 10000 ether);
+        vm.deal(address(market), 10000 ether);
         token.transfer(alice, 10_000_000 ether);
         token.transfer(bob, 10_000_000 ether);
         vm.prank(alice);
         token.approve(address(d.farm), type(uint256).max);
         vm.prank(bob);
         token.approve(address(d.farm), type(uint256).max);
+        vm.prank(swarm);
+        d.packs.selectProfile(1);
+        vm.prank(alice);
+        token.approve(address(d.packs), type(uint256).max);
+        vm.prank(bob);
+        token.approve(address(d.packs), type(uint256).max);
+        vm.prank(alice);
+        token.approve(address(d.economy), type(uint256).max);
+        vm.prank(bob);
+        token.approve(address(d.economy), type(uint256).max);
         d.rewards.advanceEpoch();
     }
 
@@ -80,7 +91,7 @@ abstract contract BaseTest is Test {
 
     /// @dev Legacy fixtures: backdate a registered farm by five days and give it level-10 XP.
     function veteran(address p) internal {
-        bytes32 base = keccak256(abi.encode(p, uint256(2)));
+        bytes32 base = keccak256(abi.encode(p, uint256(3)));
         uint256 s0 = uint256(vm.load(address(d.farm), base));
         uint256 born = vm.getBlockTimestamp() - 5 days;
         s0 = (s0 & ~uint256(type(uint64).max)) | born;
@@ -99,7 +110,7 @@ abstract contract BaseTest is Test {
             23_000_000,
             endowment_
         );
-        address[10] memory a = [
+        address[14] memory a = [
             address(d.pool),
             address(d.rewards),
             address(d.farm),
@@ -109,9 +120,13 @@ abstract contract BaseTest is Test {
             address(d.fees),
             address(d.grid),
             address(d.season),
-            address(d.engine)
+            address(d.engine),
+            address(d.economy),
+            address(d.enhancement),
+            address(d.civic),
+            address(d.billboards)
         ];
-        for (uint256 i; i < 10; ++i) {
+        for (uint256 i; i < 14; ++i) {
             r.setModule(i, a[i]);
         }
     }
@@ -143,7 +158,7 @@ abstract contract BaseTest is Test {
             )
         );
         GameRegistry r = GameRegistry(bindingFactory.deploy(7, 1, code));
-        string[10] memory names = [
+        string[14] memory names = [
             "RewardPool",
             "FarmRewards",
             "FarmCore",
@@ -153,9 +168,13 @@ abstract contract BaseTest is Test {
             "FeeRouter",
             "GridOperator",
             "Season",
-            "FarmEngine"
+            "FarmEngine",
+            "Economy",
+            "Enhancement",
+            "Civic",
+            "Billboards"
         ];
-        for (uint256 i; i < 10; ++i) {
+        for (uint256 i; i < 14; ++i) {
             bytes memory creation = vm.getCode(string.concat(names[i], ".sol:", names[i]));
             uint64 launchNumber = i < 6 ? 8 : 9;
             uint256 idx = i < 6 ? i : i - 6;
@@ -193,8 +212,11 @@ abstract contract BaseTest is Test {
 
     function payPack(address p) internal returns (uint256 id) {
         uint256 price = d.packs.price();
+        if (token.balanceOf(p) < price) token.transfer(p, price - token.balanceOf(p));
         vm.prank(p);
-        id = d.packs.openPack{value: price}(1);
+        token.approve(address(d.packs), type(uint256).max);
+        vm.prank(p);
+        id = d.packs.openPack(1);
     }
 
     function entropy() internal {

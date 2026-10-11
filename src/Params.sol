@@ -48,7 +48,8 @@ contract Params {
         HeartbeatBps,
         KeeperGasPrice,
         HeartbeatCap,
-        AuditHashThreshold
+        AuditHashThreshold,
+        RepairHours
     }
     address public immutable swarmWallet;
     mapping(Key => uint256) public get;
@@ -60,7 +61,7 @@ contract Params {
         if (heartbeatBps_ < 200 || heartbeatBps_ > 5000) revert InvalidValue();
         if (heartbeatCap_ != 1 ether) revert InvalidValue();
         swarmWallet = swarm_;
-        uint256[44] memory defaults = [
+        uint256[45] memory defaults = [
             uint256(350),
             1500,
             100,
@@ -82,7 +83,7 @@ contract Params {
             1000,
             2000,
             3000,
-            4000,
+            10000,
             0.5 ether,
             150,
             500,
@@ -104,7 +105,8 @@ contract Params {
             heartbeatBps_,
             50_000_000,
             heartbeatCap_,
-            100_000
+            100_000,
+            6 ether
         ];
         for (uint256 i; i < defaults.length; ++i) {
             get[Key(i)] = defaults[i];
@@ -134,7 +136,8 @@ contract Params {
         if (k == Key.EpicSetBps) return (500, 1000);
         if (k == Key.LegendarySetBps) return (1000, 2000);
         if (k == Key.MythicSetBps) return (1500, 3000);
-        if (k == Key.SetCapBps) return (3000, 4000);
+        if (k == Key.SetCapBps) return (8000, 10000);
+        if (k == Key.RepairHours) return (4 ether, 8 ether);
         if (k == Key.BuyBatch) return (0.1 ether, 1 ether);
         if (k == Key.SlippageBps) return (10, 150);
         if (k == Key.SellHourBps) return (200, 600);

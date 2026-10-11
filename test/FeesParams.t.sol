@@ -13,15 +13,15 @@ contract FeesParamsTest is BaseTest {
     }
 
     function testExactEthSplitsHeartbeatCapAndPullPayments() public {
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 100 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 100 ether}();
         assertEq(d.fees.credit(team), 10 ether);
         assertEq(d.fees.heartbeatBalance(), 1 ether);
-        assertEq(d.fees.rewardETH(), 89 ether);
-        vm.prank(address(d.grid));
-        d.fees.depositLobby{value: 1 ether}();
+        assertEq(d.fees.rewardETH(), 39 ether);
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 1 ether}();
         assertEq(d.fees.credit(team), 10.1 ether);
-        assertEq(d.fees.rewardETH(), 89.9 ether);
+        assertEq(d.fees.rewardETH(), 39.4 ether);
         vm.prank(address(market));
         d.fees.depositSellTax{value: 1 ether}();
         assertEq(d.fees.credit(team), 10.2 ether);
@@ -42,17 +42,17 @@ contract FeesParamsTest is BaseTest {
         vm.expectRevert(InvalidValue.selector);
         vm.prank(swarm);
         d.params.set(Params.Key.HeartbeatCap, 1.1 ether, "Cannot enlarge cap");
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 100 ether}();
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: 100 ether}();
         assertEq(d.fees.heartbeatBalance(), 1 ether);
-        assertEq(d.fees.rewardETH(), 89 ether);
+        assertEq(d.fees.rewardETH(), 39 ether);
     }
 
     function testFuzzSplitsConserveEveryWei(uint96 amount) public {
         uint256 v = bound(amount, 1, 100 ether);
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: v}();
-        assertEq(d.fees.credit(team) + d.fees.rewardETH() + d.fees.heartbeatBalance(), v);
+        vm.prank(address(market));
+        d.fees.depositSellTax{value: v}();
+        assertEq(d.fees.credit(team) + d.fees.rewardETH() + d.fees.heartbeatBalance() + d.fees.potETH(), v);
         assertLe(d.fees.heartbeatBalance(), 1 ether);
         assertEq(d.fees.credit(team), v * 1000 / 10000);
     }
@@ -105,7 +105,7 @@ contract FeesParamsTest is BaseTest {
     }
 
     function testAllDefaultParamsWithinHardBounds() public view {
-        for (uint256 i; i < 44; ++i) {
+        for (uint256 i; i < 45; ++i) {
             Params.Key k = Params.Key(i);
             (uint256 low, uint256 high) = d.params.bounds(k);
             assertGe(d.params.get(k), low);
