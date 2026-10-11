@@ -114,12 +114,9 @@ contract FeeRouter is GameModule, ReentrancyGuard {
 
     /// @dev Only immutable work producers can request credits, after advancing their monotonic cursors.
     function payWork(address caller, Params.Key kind, uint256 units, uint256 gasUsed) external {
-        bool allowed = msg.sender == rewards()
-            && (kind == Params.Key.MeasureBounty || kind == Params.Key.CreditBounty || kind == Params.Key.AuditBounty);
-        allowed = allowed || (msg.sender == grid() || msg.sender == packSale() || msg.sender == starter())
+        bool allowed = (msg.sender == grid() || msg.sender == packSale() || msg.sender == starter())
             && kind == Params.Key.EntropyBounty;
-        allowed = allowed || msg.sender == season()
-            && (kind == Params.Key.SeasonScoreBounty || kind == Params.Key.SeasonBounty);
+        allowed = allowed || msg.sender == season() && kind == Params.Key.SeasonBounty;
         if (!allowed) revert Unauthorized();
         if (units == 0 || units > 64) revert InvalidValue();
         uint256 amount = _creditBounty(caller, _workAmount(params().get(kind) * units, gasUsed));

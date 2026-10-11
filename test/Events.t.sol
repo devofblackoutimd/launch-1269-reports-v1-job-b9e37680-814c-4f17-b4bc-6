@@ -116,8 +116,8 @@ contract EventsTest is BaseTest {
         calmNext();
         step();
         _force(GridOperator.Kind.Outage, 3000, false);
-        vm.prank(address(d.rewards));
-        (uint256 raw, uint256 productive,) = d.farm.process(alice, 2);
+        step();
+        (uint256 raw, uint256 productive,,) = d.rewards.shares(2, alice);
         assertEq(raw, 12000);
         assertEq(productive, 6000);
     }
@@ -135,8 +135,7 @@ contract EventsTest is BaseTest {
             abi.encodeCall(d.grid.eventAt, (uint256(2))),
             abi.encode(GridOperator.Kind.Surge, uint16(10000), uint8(d.farm.district(alice)), seed, true)
         );
-        vm.prank(address(d.rewards));
-        d.farm.process(alice, 2);
+        step();
         assertEq(d.items.data(gpu).durability, 4950);
     }
 
@@ -146,8 +145,7 @@ contract EventsTest is BaseTest {
         calmNext();
         step();
         _force(GridOperator.Kind.Surge, 1000, true);
-        vm.prank(address(d.rewards));
-        d.farm.process(alice, 2);
+        step();
         assertEq(d.items.data(gpu).holder, address(0));
         assertEq(d.farm.itemAt(alice, 0, 0), 0);
     }
@@ -158,8 +156,8 @@ contract EventsTest is BaseTest {
         calmNext();
         step();
         _force(GridOperator.Kind.Fire, 10000, false);
-        vm.prank(address(d.rewards));
-        (uint256 raw, uint256 productive,) = d.farm.process(alice, 2);
+        step();
+        (uint256 raw, uint256 productive,,) = d.rewards.shares(2, alice);
         assertEq(raw, 10000);
         assertEq(productive, 0);
         assertEq(d.items.data(gpu).durability, 6950);
@@ -173,8 +171,8 @@ contract EventsTest is BaseTest {
         calmNext();
         step();
         _force(GridOperator.Kind.Fire, 10000, false);
-        vm.prank(address(d.rewards));
-        (, uint256 productive,) = d.farm.process(alice, 2);
+        step();
+        (, uint256 productive,,) = d.rewards.shares(2, alice);
         assertEq(productive, 18000);
         assertEq(d.items.data(psu).durability, 9950);
         assertEq(d.items.data(cooling).durability, 9950);
@@ -187,8 +185,8 @@ contract EventsTest is BaseTest {
         calmNext();
         step();
         _force(GridOperator.Kind.Theft, 2000, false);
-        vm.prank(address(d.rewards));
-        (, uint256 productive,) = d.farm.process(alice, 2);
+        step();
+        (, uint256 productive,,) = d.rewards.shares(2, alice);
         assertEq(productive, 0);
         vm.prank(alice);
         d.farm.repairCable(true);
@@ -205,8 +203,7 @@ contract EventsTest is BaseTest {
         calmNext();
         step();
         _force(GridOperator.Kind.Surge, 1000, true);
-        vm.prank(address(d.rewards));
-        d.farm.process(alice, 2);
+        step();
         assertEq(d.items.data(legend).holder, alice);
         assertEq(d.items.data(mythic).holder, alice);
         assertEq(uint256(d.items.data(legend).durability) + d.items.data(mythic).durability, 14900);

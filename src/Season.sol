@@ -15,7 +15,8 @@ interface IPrizePacks {
     function rewardPack(address p) external returns (uint256);
 }
 
-/// @notice Weekly tickets are active epochs, stored in a bounded 32-level sum tree.
+/// @notice Complete-week scores enter during lazy settlement, until a fixed seven-day grace deadline.
+/// Finalization visits eight districts and at most three 32-level ticket paths, never farms.
 contract Season is GameModule, ReentrancyGuard {
     struct Week {
         uint256[8] districtSpend;
@@ -40,6 +41,8 @@ contract Season is GameModule, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public districtClaimed;
     mapping(uint256 => mapping(address => bool)) public lotteryWon;
     mapping(uint256 => mapping(address => bool)) public lotteryClaimed;
+    mapping(uint256 => mapping(address => bool)) public completed;
+    uint256 public constant SETTLEMENT_GRACE = 7 days;
     event SeasonPrepared(uint256 indexed week, uint256 target);
     event SeasonFinalized(uint256 indexed week, uint256 district, address best, bytes32 seed);
     event LotteryWinner(uint256 indexed week, address indexed player);
@@ -95,54 +98,51 @@ contract Season is GameModule, ReentrancyGuard {
         }
     }
 
+    function deadline(uint256 w) public view returns (uint256) {
+        return launchTime() + (w + 1) * 7 days + SETTLEMENT_GRACE;
+    }
+
     function recordActivity(address p, uint256 w, uint256 gross) external {
         if (msg.sender != address(rewards())) revert Unauthorized();
-        Week storage s = seasons[w];
-        uint256 i = index[w][p];
-        if (i == 0) {
-            i = ++s.participants;
-            if (i >= 1 << 32) revert InvalidValue();
-            index[w][p] = i;
-            participant[w][i] = p;
-        }
+        if (block.timestamp >= deadline(w) || completed[w][p]) return;
         tickets[w][p]++;
-        s.totalTickets++;
-        _add(w, i, 1, false);
         yield[w][p] += gross;
-        // All spending and all epoch yields are finalized before prepare; selection is done there in bounded batches below.
+    }
+
+    function complete(address p, uint256 w) external {
+        if (msg.sender != address(rewards())) revert Unauthorized();
+        if (!rewards().seasonReady(w)) revert TooEarly();
+        if (block.timestamp >= deadline(w) || completed[w][p]) return;
+        completed[w][p] = true;
+        uint256 weight = tickets[w][p];
+        uint256 earned = yield[w][p];
+        if (weight == 0 || earned == 0) return;
+        Week storage s = seasons[w];
+        uint256 i = ++s.participants;
+        if (i >= 1 << 32) revert InvalidValue();
+        index[w][p] = i;
+        participant[w][i] = p;
+        s.totalTickets += weight;
+        _add(w, i, weight, false);
+        uint256 score = Math.mulDiv(spend[w][p], 1 ether, earned);
+        if (s.best == address(0) || score > s.bestScore || (score == s.bestScore && uint160(p) < uint160(s.best))) {
+            s.best = p;
+            s.bestScore = score;
+        }
     }
 
     function addPrize(uint256 w, uint256 amount) external {
         if (msg.sender != address(rewards())) revert Unauthorized();
         seasons[w].prize += amount;
     }
-    mapping(uint256 => uint256) public scoreCursor;
 
+    /// @notice Compatibility argument is bounded, but preparation now always does constant work, unpaid.
     function prepare(uint256 w, uint256 limit) external nonReentrant {
-        uint256 startGas = gasleft();
-        if (!rewards().seasonReady(w) || limit == 0 || limit > 64) revert TooEarly();
+        if (!rewards().seasonReady(w) || block.timestamp < deadline(w) || limit == 0 || limit > 64) revert TooEarly();
         Week storage s = seasons[w];
         if (s.target != 0) revert AlreadyDone();
-        uint256 cursor = scoreCursor[w];
-        uint256 before_ = cursor;
-        for (uint256 n; n < limit && cursor < s.participants; ++n) {
-            address p = participant[w][++cursor];
-            uint256 earned = yield[w][p];
-            if (earned == 0) continue;
-            uint256 score = Math.mulDiv(spend[w][p], 1 ether, earned);
-            if (s.best == address(0) || score > s.bestScore || (score == s.bestScore && uint160(p) < uint160(s.best))) {
-                s.best = p;
-                s.bestScore = score;
-            }
-        }
-        scoreCursor[w] = cursor;
-        if (cursor > before_) {
-            fees().payWork(msg.sender, Params.Key.SeasonScoreBounty, cursor - before_, startGas - gasleft());
-        }
-        if (cursor == s.participants) {
-            s.target = uint64(ChainClock.number() + 2);
-            emit SeasonPrepared(w, s.target);
-        }
+        s.target = uint64(ChainClock.number() + 2);
+        emit SeasonPrepared(w, s.target);
     }
 
     function _draw(uint256 w, uint256 point) private view returns (address) {
@@ -207,7 +207,7 @@ contract Season is GameModule, ReentrancyGuard {
     function claimDistrict(uint256 w) external nonReentrant returns (uint256 id) {
         Week storage s = seasons[w];
         if (
-            !s.finalized || tickets[w][msg.sender] == 0 || district(msg.sender) != s.winnerDistrict
+            !s.finalized || index[w][msg.sender] == 0 || district(msg.sender) != s.winnerDistrict
                 || districtClaimed[w][msg.sender]
         ) revert InvalidValue();
         districtClaimed[w][msg.sender] = true;

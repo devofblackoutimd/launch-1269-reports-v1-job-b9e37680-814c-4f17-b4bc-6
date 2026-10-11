@@ -63,6 +63,8 @@ contract KeeperProfitTest is BaseTest {
             d.season.recordActivity(player, 0, (i + 1) * 10 ether);
             vm.prank(address(d.farm));
             d.season.recordSpend(player, 1 ether, true);
+            vm.prank(address(d.rewards));
+            d.season.complete(player, 0);
         }
         if (withPrize) {
             fund(1 ether);
@@ -71,14 +73,14 @@ contract KeeperProfitTest is BaseTest {
             vm.prank(address(d.rewards));
             d.season.addPrize(0, 1 ether);
         }
+        vm.warp(d.season.deadline(0));
     }
 
-    function testSeasonPrepareSingleParticipantKeeperProfit() public {
+    function testSeasonPrepareIsConstantUnpaidWork() public {
         _season(1, false);
         uint256 beforeCredit = d.fees.credit(address(this));
-        uint256 start = gasleft();
         d.season.prepare(0, 1);
-        _profit("season prepare one participant", start, beforeCredit);
+        assertEq(d.fees.credit(address(this)), beforeCredit);
     }
 
     function testSeasonFinalizeThreeWinnersAndPrizeKeeperProfit() public {

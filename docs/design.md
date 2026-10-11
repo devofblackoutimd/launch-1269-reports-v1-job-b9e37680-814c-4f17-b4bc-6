@@ -1,3 +1,5 @@
+> v3.2: the epoch/season rules below are historical. See [lazy-accounting-v32.md](lazy-accounting-v32.md) for the current specification.
+
 > v3.1 changes override historical v3 wiring and operational details below: modules use the write-once authenticated GameRegistry, the hook has a one-time team binding and fee escrow, RewardPool has a frozen linear token endowment, real keeper work earns bounded gas-based bounties, initial heartbeat share is constructor-configurable, and only PackSale new paid purchases can be paused for at most72hours. See [launch-v31](launch-v31.md), [report](../report.md), and [regulator](../regulator.md). Gameplay, items, reward vintages, event caps and season rules otherwise remain v3.
 
 # BLACKOUT v3 design and accounting

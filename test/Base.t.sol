@@ -126,7 +126,10 @@ abstract contract BaseTest is Test {
     }
 
     function finish() internal {
-        while (!d.rewards.ready()) d.rewards.processEpoch(8);
+        for (uint256 i; i < d.farm.count(); ++i) {
+            address p = d.farm.playerAt(i);
+            while (d.rewards.lastSettled(p) < d.rewards.settledEpoch()) d.rewards.settle(p, 8);
+        }
     }
 
     function step() internal {

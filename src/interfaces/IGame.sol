@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GridOperator} from "../GridOperator.sol";
 
 interface IRewards {
+    function eventAt(uint256 e) external view returns (GridOperator.Kind, uint16, uint8, bytes32, bool);
+    function initialize(address p) external;
+    function settle(address p, uint256 limit) external returns (uint256);
+    function setWeight(address p, uint256 weight) external;
     function epoch() external view returns (uint256);
     function live() external view returns (bool);
     function ready() external view returns (bool);
@@ -31,6 +36,7 @@ interface ICore {
 }
 
 interface ISeason {
+    function complete(address p, uint256 week) external;
     function recordSpend(address p, uint256 ethValue, bool districtSpend) external;
     function recordActivity(address p, uint256 week, uint256 gross) external;
     function addPrize(uint256 week, uint256 amount) external;

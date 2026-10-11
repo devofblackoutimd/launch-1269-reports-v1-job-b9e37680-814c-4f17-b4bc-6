@@ -1,3 +1,5 @@
+> v3.2 results and assumptions are in [report.md](../report.md) and [lazy-accounting-v32.md](lazy-accounting-v32.md). The v3.1 keeper-funded sweep below is retained as historical context, not the current model.
+
 # v3.1 simulation provenance and limits
 
 `sim/blackout_sim_v31.py` reuses the v3 model with explicit endowment, release schedule, supply split, zero actual ETH liquidity and useful-work costs. It runs 48 custom-path cases: four endowments × instant/14/42/56 days × steady/hype/weak. Every case has zero external ETH capital. `sim/heartbeat_sweep_v31.py` first replays recorded cash flows at 1 bps resolution, then reruns complete economic paths at a selected share. No program calls the network, reads keys or signs transactions. Results are deterministic for seed 20261011.

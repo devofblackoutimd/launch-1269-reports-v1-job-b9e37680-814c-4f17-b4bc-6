@@ -6,7 +6,7 @@ import {Params} from "../src/Params.sol";
 import "../src/lib/Errors.sol";
 
 contract SeasonAuditTest is BaseTest {
-    function testAuditExactTopDecileNoWhaleSoftCap() public {
+    function testAuditThresholdStrictAndNoWhaleSoftCap() public {
         fund(100_000_000 ether);
         for (uint256 i; i < 10; ++i) {
             address p = address(uint160(0x10000 + i));
@@ -15,6 +15,9 @@ contract SeasonAuditTest is BaseTest {
             place(p, 0, 0, 0);
             if (i == 0) place(p, 1, 0, 1);
         }
+        vm.mockCall(
+            address(d.params), abi.encodeCall(d.params.get, (Params.Key.AuditHashThreshold)), abi.encode(uint256(10000))
+        );
         calmNext();
         step();
         vm.mockCall(
@@ -45,7 +48,7 @@ contract SeasonAuditTest is BaseTest {
         entropy();
         vm.warp(d.rewards.epochEnd());
         d.rewards.advanceEpoch();
-        d.rewards.processEpoch(1);
+        d.rewards.settle(alice, 1);
         vm.warp(launch + 1 days);
         vm.prank(swarm);
         d.params.set(Params.Key.ComputePairBps, 900, "Future bonus reduction");
@@ -72,6 +75,7 @@ contract SeasonAuditTest is BaseTest {
             calmNext();
             step();
         }
+        vm.warp(d.season.deadline(0));
     }
 
     function testWeeklyThreeDistinctTicketWinnersRarePackAndBestPrize() public {
@@ -115,6 +119,7 @@ contract SeasonAuditTest is BaseTest {
         d.season.prepare(0, 1);
         vm.expectRevert(TooEarly.selector);
         d.season.finalize(0);
+        vm.expectRevert(AlreadyDone.selector);
         d.season.prepare(0, 64);
         vm.expectRevert(TooEarly.selector);
         d.season.rearm(0);
@@ -140,6 +145,7 @@ contract SeasonAuditTest is BaseTest {
         vm.prank(alice);
         d.season.claimLottery(0);
         assertFalse(d.season.lotteryClaimed(0, alice));
+        step();
         vm.prank(alice);
         d.farm.expand(true);
         vm.prank(alice);

@@ -44,9 +44,9 @@ contract DeploymentTest is BaseTest {
         new Params(alice, 199, 1 ether);
         vm.expectRevert(InvalidValue.selector);
         new Params(alice, 5001, 1 ether);
-        Params funded = new Params(alice, 1000, 3 ether);
+        Params funded = new Params(alice, 1000, 1 ether);
         assertEq(funded.get(Params.Key.HeartbeatBps), 1000);
-        assertEq(funded.get(Params.Key.HeartbeatCap), 3 ether);
+        assertEq(funded.get(Params.Key.HeartbeatCap), 1 ether);
         vm.expectRevert(InvalidValue.selector);
         new Params(alice, 200, 1 ether - 1);
         vm.expectRevert(InvalidValue.selector);

@@ -56,7 +56,26 @@ contract FarmEngine is GameModule {
     }
 
     function _param(Params.Key k, bool active, uint256 e) private view returns (uint256) {
+        if (e == type(uint256).max) {
+            (, uint256 hi) = params().bounds(k);
+            return hi;
+        }
         return active ? rewards().epochParam(e, uint256(k)) : params().get(k);
+    }
+
+    /// @notice Full-health allocation envelope at maximum protocol combo bonuses; independent of lazy wear.
+    function allocationHash(uint256[24] memory ids, bool paid) external view returns (uint256 hash) {
+        Snapshot memory f;
+        f.ids = ids;
+        f.paid = paid;
+        for (uint256 i; i < 24; ++i) {
+            if (ids[i] == 0) continue;
+            f.clocks[i] = items().data(ids[i]).overclock;
+            f.health[i] = 10000;
+        }
+        for (uint256 r; r < 4; ++r) {
+            hash += _stats(f, r, false, type(uint256).max).raw;
+        }
     }
 
     function stats(Snapshot memory f, uint256 room, bool active, uint256 e) public view returns (RoomStats memory s) {
@@ -130,7 +149,7 @@ contract FarmEngine is GameModule {
         returns (uint256 raw, uint256 productive, uint256 power, uint64 theftUntil)
     {
         if (msg.sender != core()) revert Unauthorized();
-        (GridOperator.Kind kind, uint16 severity, uint8 d, bytes32 seed, bool resolved) = grid().eventAt(e);
+        (GridOperator.Kind kind, uint16 severity, uint8 d, bytes32 seed, bool resolved) = rewards().eventAt(e);
         if (!resolved) revert TooEarly();
         uint256 random = uint256(keccak256(abi.encode(seed, p)));
         bool local = uint256(keccak256(abi.encodePacked(p))) % 8 == d;

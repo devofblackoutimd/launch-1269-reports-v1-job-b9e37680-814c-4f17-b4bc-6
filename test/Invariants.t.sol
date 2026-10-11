@@ -43,15 +43,15 @@ contract GameHandler is Test {
     }
 
     function advance(uint256 gap) external {
-        if (!d.rewards.ready()) {
-            try d.rewards.processEpoch(8) {} catch {}
-            return;
-        }
         uint256 n = vm.getBlockNumber();
         vm.roll(n + 3);
         vm.setBlockhash(n + 1, keccak256(abi.encode(n)));
         vm.warp(d.rewards.epochEnd() + gap % 1 days);
         try d.rewards.advanceEpoch() {} catch {}
+    }
+
+    function settle(uint256 who, uint256 limit) external {
+        try d.rewards.settle(actors[who % 2], limit % 8 + 1) {} catch {}
     }
 
     function claim(uint256 who, uint256 amount) external {
@@ -119,7 +119,7 @@ contract InvariantsTest is BaseTest {
     function invariantPriceAndParamsBounds() public view {
         assertGe(d.packs.price(), d.params.get(Params.Key.PriceFloor));
         assertLe(d.packs.price(), d.params.get(Params.Key.PriceCeiling));
-        for (uint256 i; i < 43; ++i) {
+        for (uint256 i; i < 44; ++i) {
             Params.Key k = Params.Key(i);
             (uint256 low, uint256 high) = d.params.bounds(k);
             assertGe(d.params.get(k), low);

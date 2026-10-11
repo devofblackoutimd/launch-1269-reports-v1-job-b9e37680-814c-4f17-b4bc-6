@@ -47,7 +47,8 @@ contract Params {
         SeasonBounty,
         HeartbeatBps,
         KeeperGasPrice,
-        HeartbeatCap
+        HeartbeatCap,
+        AuditHashThreshold
     }
     address public immutable swarmWallet;
     mapping(Key => uint256) public get;
@@ -57,9 +58,9 @@ contract Params {
     constructor(address swarm_, uint256 heartbeatBps_, uint256 heartbeatCap_) {
         if (swarm_ == address(0)) revert InvalidAddress();
         if (heartbeatBps_ < 200 || heartbeatBps_ > 5000) revert InvalidValue();
-        if (heartbeatCap_ < 1 ether || heartbeatCap_ > 10 ether) revert InvalidValue();
+        if (heartbeatCap_ != 1 ether) revert InvalidValue();
         swarmWallet = swarm_;
-        uint256[43] memory defaults = [
+        uint256[44] memory defaults = [
             uint256(350),
             1500,
             100,
@@ -102,7 +103,8 @@ contract Params {
             0.00004 ether,
             heartbeatBps_,
             50_000_000,
-            heartbeatCap_
+            heartbeatCap_,
+            100_000
         ];
         for (uint256 i; i < defaults.length; ++i) {
             get[Key(i)] = defaults[i];
@@ -152,7 +154,8 @@ contract Params {
         if (k == Key.SeasonScoreBounty) return (0.000001 ether, 0.00002 ether);
         if (k == Key.SeasonBounty) return (0.00001 ether, 0.0002 ether);
         if (k == Key.HeartbeatBps) return (200, 5000);
-        if (k == Key.HeartbeatCap) return (1 ether, 10 ether);
+        if (k == Key.HeartbeatCap) return (1 ether, 1 ether);
+        if (k == Key.AuditHashThreshold) return (10_000, 10_000_000);
         return (1_000_000, 100_000_000);
     }
 

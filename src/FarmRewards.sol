@@ -10,17 +10,16 @@ import {GridOperator} from "./GridOperator.sol";
 import {ICore, ISeason} from "./interfaces/IGame.sol";
 import "./lib/Errors.sol";
 
-/// @notice Epoch transitions do O(1) work. Anyone settles a closed roster in batches of at most eight.
+/// @notice Global epochs never visit farms. Anyone may settle one farm in bounded, unpaid batches.
 contract FarmRewards is GameModule, ReentrancyGuard {
     uint256 public constant EPOCH = 6 hours;
+    uint256 public constant MAX_SETTLE = 8;
+    uint256 public constant PRECISION = 1e27;
 
     struct Epoch {
         uint64 start;
         uint64 end;
-        uint64 roster;
-        uint8 phase;
-        uint256 cursor;
-        uint256 raw;
+        uint256 raw; // Committed full-health allocation hash, fixed at epoch start.
         uint256 budget;
         uint256 mining;
         uint256 redis;
@@ -29,9 +28,16 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         uint256 target;
         uint256 tariff;
         uint256 emission;
-        uint256 audited;
-        uint256 lastActive;
-        uint256 redisPaid;
+        uint256 auditThreshold;
+        uint256 rewardPerHash;
+        uint256 accRewardPerHash;
+        uint256 settledHash;
+        uint256 allocated;
+        uint256 scrap;
+        GridOperator.Kind kind;
+        uint16 severity;
+        uint8 district;
+        bytes32 seed;
     }
 
     struct Share {
@@ -48,6 +54,11 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     struct Account {
+        uint256 lastSettled;
+        uint256 weight;
+        uint256 nextWeight;
+        uint256 weightEpoch;
+        bool initialized;
         uint256 pending;
         uint256 matured;
         address referrer;
@@ -64,7 +75,9 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     mapping(uint256 => Epoch) public epochs;
     mapping(uint256 => mapping(uint256 => uint256)) public epochParam;
     mapping(uint256 => mapping(address => Share)) public shares;
-    mapping(uint256 => uint256[]) private heaps;
+    uint256 public nextTotalHash;
+    uint256 public accRewardPerHash;
+    mapping(uint256 => uint256) public lastEpochInWeek;
     mapping(address => Account) private accounts;
     event EpochStarted(uint256 indexed epoch, uint256 start, uint256 end, address caller);
     event EpochClosed(uint256 indexed epoch, uint256 budget, uint256 roster);
@@ -109,7 +122,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     function ready() public view returns (bool) {
-        return epoch == 0 || settledEpoch + 1 == epoch;
+        return true;
     }
 
     function live() public view returns (bool) {
@@ -125,27 +138,49 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     function advanceEpoch() external nonReentrant {
-        if (block.timestamp < launchTime() || !ready() || (epoch != 0 && block.timestamp < epochs[epoch].end)) {
-            revert TooEarly();
+        if (block.timestamp < launchTime() || (epoch != 0 && block.timestamp < epochs[epoch].end)) revert TooEarly();
+        if (scrapAllowance != 0) {
+            pool().recycle(scrapAllowance);
+            scrapAllowance = 0;
         }
         if (epoch != 0) {
             grid().resolveFor(epoch, msg.sender);
             Epoch storage old = epochs[epoch];
-            old.roster = uint64(core().count());
-            old.phase = 1;
-            old.mining = pool().available() * old.emission / 40000;
-            old.budget = old.mining * 116 / 100;
+            (old.kind, old.severity, old.district, old.seed,) = grid().eventAt(epoch);
             old.redis = currentRedis;
-            pool().reserve(old.budget);
-            emit EpochClosed(epoch, old.budget, old.roster);
+            uint256 week = (old.start - launchTime()) / 7 days;
+            lastEpochInWeek[week] = epoch;
+            if (old.raw != 0) {
+                old.mining = pool().available() * old.emission / 40000;
+                // 110% Green gross + 5% referral + 1% season = 116.5% maximum, before tariff.
+                old.budget = old.mining * 117 / 100;
+                pool().reserve(old.budget);
+                old.rewardPerHash = Math.mulDiv(old.mining, PRECISION, old.raw);
+                accRewardPerHash += old.rewardPerHash;
+                old.accRewardPerHash = accRewardPerHash;
+                uint256 prize = old.mining / 100;
+                old.spent = prize;
+                old.allocated = prize;
+                if (prize != 0) season().addPrize(week, prize);
+                lastYieldPerHash = Math.mulDiv(old.mining, 1 ether, old.raw);
+            } else {
+                queuedTax += old.redis;
+                old.redis = 0;
+                old.accRewardPerHash = accRewardPerHash;
+                lastYieldPerHash = 0;
+            }
+            settledEpoch = epoch; // Globally closed; individual farm cursors are independent.
+            emit EpochClosed(epoch, old.budget, old.raw);
         }
         epoch++;
         Epoch storage e = epochs[epoch];
         e.start = uint64(block.timestamp);
         e.end = uint64(block.timestamp + EPOCH);
+        e.raw = nextTotalHash;
         e.target = params().get(Params.Key.DemandTarget) * 6;
         e.tariff = params().get(Params.Key.TariffBps);
         e.emission = params().get(Params.Key.EmissionBps);
+        e.auditThreshold = params().get(Params.Key.AuditHashThreshold);
         for (uint256 k = uint256(Params.Key.FullSetBps); k <= uint256(Params.Key.SetCapBps); ++k) {
             epochParam[epoch][k] = params().get(Params.Key(k));
         }
@@ -156,131 +191,121 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         emit EpochStarted(epoch, e.start, e.end, msg.sender);
     }
 
+    function epochData(uint256 id) external view returns (Epoch memory) {
+        return epochs[id];
+    }
+
+    function eventAt(uint256 id) external view returns (GridOperator.Kind, uint16, uint8, bytes32, bool) {
+        Epoch storage e = epochs[id];
+        return (e.kind, e.severity, e.district, e.seed, id != 0 && id <= settledEpoch);
+    }
+
     function recordSales(uint256 n) external onlyCore {
         if (!live()) revert TooEarly();
         epochs[epoch].sales += n;
     }
 
-    function _greater(uint256 e, uint256 a, uint256 b) private view returns (bool) {
-        uint256 x = shares[e][core().playerAt(a)].raw;
-        uint256 y = shares[e][core().playerAt(b)].raw;
-        return x > y || (x == y && a < b);
+    function initialize(address p) external onlyCore {
+        Account storage a = accounts[p];
+        if (a.initialized) revert AlreadyDone();
+        a.initialized = true;
+        a.lastSettled = epoch == 0 ? 0 : epoch - 1;
     }
 
-    function _push(uint256 e, uint256 id) private {
-        uint256[] storage h = heaps[e];
-        h.push(id);
-        uint256 i = h.length - 1;
-        while (i != 0) {
-            uint256 p = (i - 1) / 2;
-            if (!_greater(e, h[i], h[p])) break;
-            (h[i], h[p]) = (h[p], h[i]);
-            i = p;
+    /// @dev Owner configuration changes take effect next epoch. Settlement alone never changes weights.
+    function setWeight(address p, uint256 weight) external onlyCore {
+        Account storage a = accounts[p];
+        if (!a.initialized || a.lastSettled < settledEpoch) revert CatchUpRequired();
+        if (a.weightEpoch <= epoch) a.weight = a.nextWeight;
+        nextTotalHash = nextTotalHash - a.nextWeight + weight;
+        a.nextWeight = weight;
+        a.weightEpoch = epoch + 1;
+    }
+
+    function farmWeight(address p, uint256 e) public view returns (uint256) {
+        Account storage a = accounts[p];
+        return e >= a.weightEpoch ? a.nextWeight : a.weight;
+    }
+
+    function lastSettled(address p) external view returns (uint256) {
+        return accounts[p].lastSettled;
+    }
+
+    /// @notice No bounty; catch-up is paid by the player or a voluntary sponsor. Mining never expires.
+    function settle(address p, uint256 limit) external nonReentrant returns (uint256 cursor) {
+        return _settle(p, limit);
+    }
+
+    function _settle(address p, uint256 limit) private returns (uint256 cursor) {
+        if (limit == 0 || limit > MAX_SETTLE) revert InvalidValue();
+        Account storage a = accounts[p];
+        if (!a.initialized) return settledEpoch;
+        cursor = a.lastSettled;
+        for (uint256 n; n < limit && cursor < settledEpoch; ++n) {
+            ++cursor;
+            a.lastSettled = cursor; // CEI and monotonically increasing, including zero-yield epochs.
+            _settleOne(p, cursor);
         }
     }
 
-    function _pop(uint256 e) private returns (uint256 id) {
-        uint256[] storage h = heaps[e];
-        id = h[0];
-        h[0] = h[h.length - 1];
-        h.pop();
-        uint256 i;
-        while (i * 2 + 1 < h.length) {
-            uint256 j = i * 2 + 1;
-            if (j + 1 < h.length && _greater(e, h[j + 1], h[j])) j++;
-            if (!_greater(e, h[j], h[i])) break;
-            (h[i], h[j]) = (h[j], h[i]);
-            i = j;
-        }
-    }
-
-    /// @dev Three phases: measure, select top decile (audit only), credit. No caller supplies allocation data.
-    function processEpoch(uint256 limit) external nonReentrant {
-        uint256 startGas = gasleft();
-        if (limit == 0 || limit > 8 || epoch < 2 || ready()) revert InvalidValue();
-        uint256 id = epoch - 1;
+    function _settleOne(address p, uint256 id) private {
         Epoch storage e = epochs[id];
-        (GridOperator.Kind kind, uint16 severity,, bytes32 seed,) = grid().eventAt(id);
-        uint256 work;
-        Params.Key bountyKind =
-            e.phase == 1 ? Params.Key.MeasureBounty : e.phase == 2 ? Params.Key.AuditBounty : Params.Key.CreditBounty;
-        if (e.phase == 1) {
-            for (uint256 n; n < limit && e.cursor < e.roster; ++n) {
-                address p = core().playerAt(e.cursor);
-                (uint256 raw, uint256 productive, uint256 power) = core().process(p, id);
-                shares[id][p] = Share(raw, productive, power, false);
-                e.raw += raw;
-                if (raw != 0) e.lastActive = e.cursor;
-                if (raw != 0 && kind == GridOperator.Kind.Audit) _push(id, e.cursor);
-                e.cursor++;
-                work++;
+        (uint256 raw, uint256 productive, uint256 power) = core().process(p, id);
+        uint256 weight = farmWeight(p, id);
+        bool audit = e.kind == GridOperator.Kind.Audit && raw > e.auditThreshold;
+        shares[id][p] = Share(raw, productive, power, audit);
+        uint256 week = (e.start - launchTime()) / 7 days;
+        if (weight != 0) {
+            uint256 gross = Math.mulDiv(e.rewardPerHash, productive, PRECISION);
+            uint256 electricity = Math.mulDiv(e.rewardPerHash, power, PRECISION) * e.tariff / 10000;
+            if (e.kind == GridOperator.Kind.Cheap) electricity /= 2;
+            uint256 tax = audit ? gross / 10 : 0;
+            uint256 net = gross - tax - Math.min(electricity, gross - tax);
+            uint256 redisAllocation = Math.mulDiv(e.redis, weight, e.raw);
+            uint256 redis = Math.mulDiv(e.redis, Math.min(raw, weight), e.raw);
+            Account storage a = accounts[p];
+            a.referralClosed = true;
+            uint256 referral;
+            if (a.referrer != address(0)) {
+                referral = gross * 500 / 10000;
+                _credit(a.referrer, referral, id, e.end);
             }
-            if (e.cursor == e.roster) {
-                e.cursor = 0;
-                e.phase = kind == GridOperator.Kind.Audit ? 2 : 3;
-                e.audited = (heaps[id].length + 9) / 10;
+            // Use the same rounding as actual gross. Flooring a global envelope before
+            // apportionment can otherwise underfund a farm by one wei and lock its cursor.
+            uint256 maxGross = Math.mulDiv(e.rewardPerHash, weight * 11000 / 10000, PRECISION);
+            uint256 allocation = maxGross + maxGross * 500 / 10000 + redisAllocation;
+            uint256 spent = net + redis + referral;
+            // Protocol maximum combos bound productive hash by 110% of committed allocation hash.
+            if (spent > allocation) revert InvalidValue();
+            _credit(p, net + redis, id, e.end);
+            e.spent += spent;
+            e.allocated += allocation;
+            e.settledHash += weight;
+            uint256 unused = allocation - spent;
+            if (id == settledEpoch) {
+                uint256 allowance = Math.min(unused, e.mining / 6 - e.scrap);
+                e.scrap += allowance;
+                scrapAllowance += allowance;
+                unused -= allowance;
             }
-        } else if (e.phase == 2) {
-            for (uint256 n; n < limit && e.cursor < e.audited; ++n) {
-                shares[id][core().playerAt(_pop(id))].audit = true;
-                e.cursor++;
-                work++;
+            if (unused != 0) pool().recycle(unused);
+            if (e.settledHash == e.raw) {
+                uint256 dust = e.budget + e.redis - e.allocated;
+                if (dust != 0) pool().recycle(dust);
+                emit EpochSettled(id, e.spent, dust);
             }
-            if (e.cursor == e.audited) {
-                e.cursor = 0;
-                e.phase = 3;
-            }
-        } else {
-            for (uint256 n; n < limit && e.cursor < e.roster; ++n) {
-                address p = core().playerAt(e.cursor++);
-                work++;
-                Share storage s = shares[id][p];
-                if (s.raw == 0) continue;
-                uint256 gross = Math.mulDiv(e.mining, s.productive, e.raw);
-                uint256 electricity = Math.mulDiv(e.mining, s.power, e.raw) * e.tariff / 10000;
-                if (kind == GridOperator.Kind.Cheap) electricity /= 2;
-                uint256 audit = s.audit ? gross * 1000 * severity / 100_000_000 : 0;
-                uint256 net = gross - audit - Math.min(electricity, gross - audit);
-                uint256 redis =
-                    e.cursor - 1 == e.lastActive ? e.redis - e.redisPaid : Math.mulDiv(e.redis, s.raw, e.raw);
-                e.redisPaid += redis;
-                uint256 referral;
-                Account storage a = accounts[p];
-                a.referralClosed = true;
-                if (a.referrer != address(0)) {
-                    referral = gross * 500 / 10000;
-                    _credit(a.referrer, referral, id, e.end);
-                }
-                _credit(p, net + redis, id, e.end);
-                e.spent += net + redis + referral;
+            if (raw != 0) {
                 core().activity(p, id, gross, net);
-                if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(seed, p, "supply"))) % 10000 < 500) {
-                    core().grantDrop(p, keccak256(abi.encode(seed, p, "item")));
+                if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(e.seed, p, "supply"))) % 10000 < 500) {
+                    core().grantDrop(p, keccak256(abi.encode(e.seed, p, "item")));
                 }
-                season().recordActivity(p, (e.start - launchTime()) / 7 days, gross);
-            }
-            if (e.cursor == e.roster) {
-                uint256 prize = e.raw == 0 ? 0 : e.mining / 100;
-                e.spent += prize;
-                if (prize != 0) season().addPrize((e.start - launchTime()) / 7 days, prize);
-                uint256 recycle = e.budget + e.redis - e.spent;
-                if (e.raw == 0) {
-                    queuedTax += e.redis;
-                    recycle -= e.redis;
-                }
-                uint256 freshUnused = e.budget > e.spent ? e.budget - e.spent : 0;
-                uint256 allowance = e.raw == 0 ? 0 : Math.min(e.mining / 6, freshUnused);
-                if (scrapAllowance != 0) pool().recycle(scrapAllowance);
-                scrapAllowance = allowance;
-                recycle -= allowance;
-                if (recycle != 0) pool().recycle(recycle);
-                lastYieldPerHash = e.raw == 0 ? 0 : Math.mulDiv(e.mining, 1 ether, e.raw);
-                e.phase = 4;
-                settledEpoch = id;
-                emit EpochSettled(id, e.mining, recycle);
+                season().recordActivity(p, week, gross);
             }
         }
-        if (work != 0) fees().payWork(msg.sender, bountyKind, work, startGas - gasleft());
+        // Only a complete week's yield may compete for spend/yield prizes; partial settlement cannot win.
+        if (id == lastEpochInWeek[week] && epochs[epoch].start >= launchTime() + (week + 1) * 7 days) {
+            season().complete(p, week);
+        }
     }
 
     function pending(address p) external view returns (uint256) {
@@ -303,6 +328,12 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         if (amount == 0) return;
         Account storage a = accounts[p];
         a.pending += amount;
+        // Referrals can arrive out of epoch order. Never evict a younger, still-taxable vintage.
+        if (block.timestamp >= at + 7 days) {
+            a.matured += amount;
+            emit Credited(p, e, amount);
+            return;
+        }
         Vintage storage v = a.vintages[e % 32];
         if (v.amount != 0 && v.epoch != e) {
             a.matured += v.amount;
@@ -322,6 +353,15 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         Account storage a = accounts[p];
         if (amount == 0 || amount > a.pending) revert InsufficientBalance();
         a.pending -= amount;
+        // Sparse credits can leave an old slot behind the current ring head.
+        // Sweep by actual age before consuming any higher-tax vintage.
+        for (uint256 n; n < 32; ++n) {
+            Vintage storage old = a.vintages[n];
+            if (old.amount != 0 && block.timestamp >= uint256(old.at) + 7 days) {
+                a.matured += old.amount;
+                old.amount = 0;
+            }
+        }
         uint256 used = Math.min(amount, a.matured);
         a.matured -= used;
         amount -= used;
@@ -340,6 +380,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     function claim(uint256 amount) external nonReentrant returns (uint256 net) {
+        _settle(msg.sender, MAX_SETTLE);
         uint256 tax = _consume(msg.sender, amount, true);
         queuedTax += tax;
         net = amount - tax;
@@ -363,7 +404,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     function seasonReady(uint256 week) external view returns (bool) {
-        return ready() && epoch != 0 && epochs[epoch].start >= launchTime() + (week + 1) * 7 days;
+        return epoch != 0 && epochs[epoch].start >= launchTime() + (week + 1) * 7 days;
     }
 
     function releasePrize(uint256 amount) external nonReentrant {

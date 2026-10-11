@@ -23,49 +23,33 @@ contract BountiesTest is BaseTest {
         d.rewards.advanceEpoch();
     }
 
-    function testSettlementPaidPerUnitNotPerCallAndCannotReplay() public {
+    function testLazySettlementUnpaidAndCannotReplay() public {
+        fund(100_000_000 ether);
         payPack(alice);
-        payPack(bob);
         place(alice, 0, 0, 0);
-        place(bob, 0, 0, 0);
+        _close();
         _close();
         vm.prank(keeper);
-        d.rewards.processEpoch(1);
-        assertGt(d.fees.credit(keeper), 0);
-        assertLe(d.fees.credit(keeper), d.params.get(Params.Key.MeasureBounty));
-        uint256 paid = d.fees.credit(keeper);
+        d.rewards.settle(alice, 8);
+        assertGt(d.rewards.pending(alice), 0);
+        assertEq(d.fees.credit(keeper), 0);
+        uint256 pending = d.rewards.pending(alice);
+        uint256 reserved = d.pool.reserved();
         vm.prank(keeper);
-        d.rewards.processEpoch(8);
-        assertGt(d.fees.credit(keeper), paid);
-        assertLe(d.fees.credit(keeper) - paid, d.params.get(Params.Key.MeasureBounty));
-        assertLe(d.fees.credit(keeper), d.params.get(Params.Key.MeasureBounty) * 2);
-        paid = d.fees.credit(keeper);
-        vm.prank(keeper);
-        d.rewards.processEpoch(8);
-        assertGt(d.fees.credit(keeper), paid);
-        assertLe(d.fees.credit(keeper) - paid, d.params.get(Params.Key.CreditBounty) * 2);
-        assertLe(
-            d.fees.credit(keeper), (d.params.get(Params.Key.MeasureBounty) + d.params.get(Params.Key.CreditBounty)) * 2
-        );
-        assertTrue(d.rewards.ready());
-        paid = d.fees.credit(keeper);
-        vm.expectRevert(InvalidValue.selector);
-        vm.prank(keeper);
-        d.rewards.processEpoch(1);
-        assertEq(d.fees.credit(keeper), paid);
+        d.rewards.settle(alice, 8);
+        assertEq(d.rewards.pending(alice), pending);
+        assertEq(d.pool.reserved(), reserved);
+        assertEq(d.fees.credit(keeper), 0);
     }
 
     function testEmptyRosterAndInvalidBatchReceiveNothing() public {
         _close();
         vm.expectRevert(InvalidValue.selector);
-        vm.prank(keeper);
-        d.rewards.processEpoch(0);
+        d.rewards.settle(alice, 0);
         vm.expectRevert(InvalidValue.selector);
+        d.rewards.settle(alice, 9);
         vm.prank(keeper);
-        d.rewards.processEpoch(9);
-        vm.startPrank(keeper);
-        while (!d.rewards.ready()) d.rewards.processEpoch(8);
-        vm.stopPrank();
+        d.rewards.settle(alice, 8);
         assertEq(d.fees.credit(keeper), 0);
     }
 
@@ -152,44 +136,32 @@ contract BountiesTest is BaseTest {
         assertEq(d.fees.credit(keeper), paid);
     }
 
-    function testWeeklyScoringAndFinalizeEachPaidOnceAndEmptyWeekUnpaid() public {
+    function testOnlyFinalizePaidOnceAndEmptyWeekUnpaid() public {
         vm.mockCall(address(d.rewards), abi.encodeCall(d.rewards.seasonReady, (0)), abi.encode(true));
         vm.startPrank(address(d.rewards));
         d.season.recordActivity(alice, 0, 10 ether);
         d.season.recordActivity(bob, 0, 20 ether);
+        d.season.complete(alice, 0);
+        d.season.complete(bob, 0);
         vm.stopPrank();
+        vm.warp(d.season.deadline(0));
         vm.prank(keeper);
         d.season.prepare(0, 1);
-        uint256 first = d.fees.credit(keeper);
-        assertGt(first, 0);
-        assertLe(first, d.params.get(Params.Key.SeasonScoreBounty));
-        vm.prank(keeper);
-        d.season.prepare(0, 64);
-        uint256 scored = d.fees.credit(keeper);
-        assertGt(scored, first);
-        assertLe(scored - first, d.params.get(Params.Key.SeasonScoreBounty));
-        assertLe(d.fees.credit(keeper), d.params.get(Params.Key.SeasonScoreBounty) * 2);
+        assertEq(d.fees.credit(keeper), 0);
         vm.expectRevert(AlreadyDone.selector);
-        vm.prank(keeper);
         d.season.prepare(0, 64);
-        assertEq(d.fees.credit(keeper), scored);
         vm.expectRevert(TooEarly.selector);
-        vm.prank(keeper);
         d.season.finalize(0);
-        assertEq(d.fees.credit(keeper), scored);
         entropy();
         vm.prank(keeper);
         d.season.finalize(0);
         uint256 paid = d.fees.credit(keeper);
-        assertGt(paid, scored);
-        assertLe(paid - scored, d.params.get(Params.Key.SeasonBounty));
-        assertLe(paid, d.params.get(Params.Key.SeasonScoreBounty) * 2 + d.params.get(Params.Key.SeasonBounty));
+        assertGt(paid, 0);
+        assertLe(paid, d.params.get(Params.Key.SeasonBounty));
         vm.expectRevert(AlreadyDone.selector);
-        vm.prank(keeper);
         d.season.finalize(0);
-        assertEq(d.fees.credit(keeper), paid);
         vm.mockCall(address(d.rewards), abi.encodeCall(d.rewards.seasonReady, (1)), abi.encode(true));
-        vm.prank(keeper);
+        vm.warp(d.season.deadline(1));
         d.season.prepare(1, 64);
         entropy();
         vm.prank(keeper);
@@ -198,26 +170,9 @@ contract BountiesTest is BaseTest {
     }
 
     function testEveryWorkKindBoundedByHeartbeatAndAuthorizedProducer() public {
-        Params.Key[8] memory kinds = [
-            Params.Key.MeasureBounty,
-            Params.Key.CreditBounty,
-            Params.Key.AuditBounty,
-            Params.Key.EntropyBounty,
-            Params.Key.SeasonScoreBounty,
-            Params.Key.SeasonBounty,
-            Params.Key.EntropyBounty,
-            Params.Key.EntropyBounty
-        ];
-        address[8] memory senders = [
-            address(d.rewards),
-            address(d.rewards),
-            address(d.rewards),
-            address(d.grid),
-            address(d.season),
-            address(d.season),
-            address(d.packs),
-            address(d.starter)
-        ];
+        Params.Key[4] memory kinds =
+            [Params.Key.EntropyBounty, Params.Key.SeasonBounty, Params.Key.EntropyBounty, Params.Key.EntropyBounty];
+        address[4] memory senders = [address(d.grid), address(d.season), address(d.packs), address(d.starter)];
         for (uint256 i; i < kinds.length; ++i) {
             vm.expectRevert(Unauthorized.selector);
             d.fees.payWork(keeper, kinds[i], 1, 100_000);
@@ -245,28 +200,14 @@ contract BountiesTest is BaseTest {
         }
     }
 
-    function testAuditSelectionBountyOnlyForActuallySelectedFarms() public {
-        fund(10_000_000 ether);
-        payPack(alice);
-        place(alice, 0, 0, 0);
-        step();
-        vm.mockCall(
-            address(d.grid),
-            abi.encodeCall(d.grid.eventAt, (2)),
-            abi.encode(GridOperator.Kind.Audit, uint16(10000), uint8(0), keccak256("audit"), true)
-        );
-        _close();
-        d.rewards.processEpoch(8);
-        vm.prank(keeper);
-        d.rewards.processEpoch(8);
-        assertGt(d.fees.credit(keeper), 0);
-        assertLe(d.fees.credit(keeper), d.params.get(Params.Key.AuditBounty));
-        uint256 auditPaid = d.fees.credit(keeper);
-        vm.prank(keeper);
-        d.rewards.processEpoch(8);
-        assertGt(d.fees.credit(keeper), auditPaid);
-        assertLe(d.fees.credit(keeper) - auditPaid, d.params.get(Params.Key.CreditBounty));
-        assertLe(d.fees.credit(keeper), d.params.get(Params.Key.AuditBounty) + d.params.get(Params.Key.CreditBounty));
+    function testRemovedWorkBountiesRejectedEvenFromOldProducer() public {
+        Params.Key[4] memory kinds =
+            [Params.Key.MeasureBounty, Params.Key.CreditBounty, Params.Key.AuditBounty, Params.Key.SeasonScoreBounty];
+        for (uint256 i; i < kinds.length; ++i) {
+            vm.expectRevert(Unauthorized.selector);
+            vm.prank(i == 3 ? address(d.season) : address(d.rewards));
+            d.fees.payWork(keeper, kinds[i], 1, 100000);
+        }
     }
 
     function testStarterEntropySurvivesFullInventoryExpiryAndPauseWithoutReplayPayment() public {
@@ -322,25 +263,25 @@ contract BountiesTest is BaseTest {
 
     function testWorkCreditRespectsZeroGasPricePriceCeilingAndUnitCap() public {
         vm.txGasPrice(0);
-        vm.prank(address(d.rewards));
-        d.fees.payWork(keeper, Params.Key.MeasureBounty, 1, 100_000);
+        vm.prank(address(d.grid));
+        d.fees.payWork(keeper, Params.Key.EntropyBounty, 1, 10_000);
         assertEq(d.fees.credit(keeper), 0);
 
         uint256 ceiling = d.params.get(Params.Key.KeeperGasPrice);
         vm.txGasPrice(ceiling);
-        vm.prank(address(d.rewards));
-        d.fees.payWork(keeper, Params.Key.MeasureBounty, 1, 100_000);
+        vm.prank(address(d.grid));
+        d.fees.payWork(keeper, Params.Key.EntropyBounty, 1, 10_000);
         uint256 atCeiling = d.fees.credit(keeper);
         assertGt(atCeiling, 0);
-        assertLt(atCeiling, d.params.get(Params.Key.MeasureBounty));
+        assertLt(atCeiling, d.params.get(Params.Key.EntropyBounty));
         vm.txGasPrice(ceiling * 100);
-        vm.prank(address(d.rewards));
-        d.fees.payWork(keeper, Params.Key.MeasureBounty, 1, 100_000);
+        vm.prank(address(d.grid));
+        d.fees.payWork(keeper, Params.Key.EntropyBounty, 1, 10_000);
         assertEq(d.fees.credit(keeper), atCeiling * 2);
 
         uint256 before_ = d.fees.credit(keeper);
-        vm.prank(address(d.rewards));
-        d.fees.payWork(keeper, Params.Key.MeasureBounty, 1, 100_000_000);
-        assertEq(d.fees.credit(keeper) - before_, d.params.get(Params.Key.MeasureBounty));
+        vm.prank(address(d.grid));
+        d.fees.payWork(keeper, Params.Key.EntropyBounty, 1, 100_000_000);
+        assertEq(d.fees.credit(keeper) - before_, d.params.get(Params.Key.EntropyBounty));
     }
 }

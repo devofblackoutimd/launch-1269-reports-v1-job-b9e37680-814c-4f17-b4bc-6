@@ -50,10 +50,7 @@ contract GasTest is BaseTest {
         emit log_named_uint("unequip", g - gasleft());
     }
 
-    function testGasTypicalFarmSettlementAndProfit() public {
-        vm.deal(address(d.packs), 1 ether);
-        vm.prank(address(d.packs));
-        d.fees.depositPack{value: 1 ether}();
+    function testGasTypicalFarmSettlementHasNoBounty() public {
         fund(100_000_000 ether);
         payPack(alice);
         place(alice, 0, 0, 0);
@@ -66,65 +63,41 @@ contract GasTest is BaseTest {
         d.rewards.advanceEpoch();
         uint256 beforeCredit = d.fees.credit(address(this));
         uint256 start = gasleft();
-        d.rewards.processEpoch(4);
-        uint256 used = start - gasleft();
-        emit log_named_uint("measure typical three-item farm", used);
-        emit log_named_uint("measure typical bounty", d.fees.credit(address(this)) - beforeCredit);
-        assertGt(d.fees.credit(address(this)) - beforeCredit, (used + 21000) * tx.gasprice);
-        beforeCredit = d.fees.credit(address(this));
-        start = gasleft();
-        d.rewards.processEpoch(4);
-        used = start - gasleft();
-        emit log_named_uint("credit typical farm", used);
-        emit log_named_uint("credit typical bounty", d.fees.credit(address(this)) - beforeCredit);
-        assertGt(d.fees.credit(address(this)) - beforeCredit, (used + 21000) * tx.gasprice);
+        d.rewards.settle(alice, 8);
+        emit log_named_uint("settle typical three-item farm one epoch", start - gasleft());
+        assertEq(d.fees.credit(address(this)), beforeCredit);
     }
 
-    function testGasEightFullFarmsSettlementStaysBounded() public {
+    function testGasFullFarmLongIdleBoundedChunks() public {
         fund(100_000_000 ether);
-        for (uint256 i; i < 8; ++i) {
-            address p = address(uint160(0x50000 + i));
-            vm.deal(p, 20 ether);
-            uint256 q = d.packs.quote(112);
-            vm.prank(p);
-            d.packs.openPack{value: q}(112);
-        }
+        uint256 q = d.packs.quote(112);
+        vm.prank(alice);
+        d.packs.openPack{value: q}(112);
         vm.warp(launch + 3 days);
         entropy();
         d.rewards.advanceEpoch();
         finish();
-        for (uint256 i; i < 8; ++i) {
-            address p = address(uint160(0x50000 + i));
-            for (uint256 room; room < 4; ++room) {
-                for (uint256 slot; slot < 6; ++slot) {
-                    uint256 id = mintItem(p, uint8(slot), 0);
-                    vm.prank(p);
-                    d.farm.place(id, room, slot);
-                }
+        for (uint256 room; room < 4; ++room) {
+            for (uint256 slot; slot < 6; ++slot) {
+                uint256 id = mintItem(alice, uint8(slot), 0);
+                vm.prank(alice);
+                d.farm.place(id, room, slot);
             }
         }
-        calmNext();
-        step();
-        entropy();
-        vm.warp(d.rewards.epochEnd());
-        d.rewards.advanceEpoch();
-        uint256 beforeCredit = d.fees.credit(address(this));
+        for (uint256 i; i < 40; ++i) {
+            calmNext();
+            entropy();
+            vm.warp(d.rewards.epochEnd());
+            d.rewards.advanceEpoch();
+        }
+        uint256 cursor = d.rewards.lastSettled(alice);
         uint256 g = gasleft();
-        d.rewards.processEpoch(8);
-        uint256 measured = g - gasleft();
-        emit log_named_uint("measure eight full 24-item farms", measured);
-        assertLt(measured, 18_000_000);
-        uint256 measuredPaid = d.fees.credit(address(this)) - beforeCredit;
-        emit log_named_uint("measure bounty wei", measuredPaid);
-        assertGt(measuredPaid, (measured + 21000) * tx.gasprice);
-        beforeCredit = d.fees.credit(address(this));
-        g = gasleft();
-        d.rewards.processEpoch(8);
-        uint256 credit = g - gasleft();
-        emit log_named_uint("credit eight full farms", credit);
-        assertLt(credit, 8_000_000);
-        uint256 creditPaid = d.fees.credit(address(this)) - beforeCredit;
-        emit log_named_uint("credit bounty wei", creditPaid);
-        assertGt(creditPaid, (credit + 21000) * tx.gasprice);
+        d.rewards.settle(alice, 8);
+        uint256 used = g - gasleft();
+        emit log_named_uint("settle full 24-item farm eight epochs after 40 idle", used);
+        assertLt(used, 25_000_000);
+        assertEq(d.rewards.lastSettled(alice), cursor + 8);
+        finish();
+        assertEq(d.rewards.lastSettled(alice), d.rewards.settledEpoch());
     }
 }

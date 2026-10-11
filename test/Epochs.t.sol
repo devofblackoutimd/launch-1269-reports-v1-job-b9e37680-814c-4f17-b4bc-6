@@ -38,7 +38,7 @@ contract EpochsTest is BaseTest {
         assertEq(d.rewards.epoch(), 3);
         assertEq(d.rewards.epochEnd(), block.timestamp + 6 hours);
         assertGt(d.rewards.pending(alice), 0);
-        assertLe(before_ - d.pool.available(), before_ * 350 * 116 / 4_000_000);
+        assertLe(before_ - d.pool.available(), before_ * 350 * 117 / 4_000_000);
     }
 
     function testClaimsEveryEpochAndRedistributionIsNextEpoch() public {
@@ -85,8 +85,7 @@ contract EpochsTest is BaseTest {
         vm.warp(d.rewards.epochEnd());
         d.rewards.advanceEpoch();
         vm.expectRevert(InvalidValue.selector);
-        d.rewards.processEpoch(9);
-        vm.expectRevert(TooEarly.selector);
+        d.rewards.settle(alice, 9);
         vm.prank(alice);
         d.farm.unplace(0, 0);
         finish();

@@ -165,13 +165,20 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         if (f.serial != 0) return;
         f.born = uint64(block.timestamp);
         f.serial = nextSerial++;
+        rewards().initialize(p);
         emit Registered(p, district(p));
     }
 
     function _prepare(address p) private {
         if (!rewards().ready() || !rewards().live()) revert TooEarly();
         _register(p);
+        if (rewards().settle(p, 8) < rewards().settledEpoch()) revert CatchUpRequired();
         _roll(p, rewards().epoch());
+        _sync(p);
+    }
+
+    function _sync(address p) private {
+        rewards().setWeight(p, engine().allocationHash(farms[p].loadout, farms[p].paid != 0));
     }
 
     function _roll(address p, uint256 e) private {
@@ -195,12 +202,13 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         _prepare(p);
         farms[p].paid += n;
         farms[p].xp += 25 * n;
+        _sync(p);
         rewards().recordSales(n);
         season().recordSpend(p, ethValue, true);
     }
 
-    function setReferrer(address inviter) external {
-        _register(msg.sender);
+    function setReferrer(address inviter) external nonReentrant {
+        _prepare(msg.sender);
         if (farms[inviter].serial == 0 || farms[inviter].serial >= farms[msg.sender].serial) revert InvalidValue();
         rewards().setReferrer(msg.sender, inviter);
     }
@@ -230,6 +238,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         }
         f.loadout[room * 6 + slot] = id;
         items().equip(msg.sender, id);
+        _sync(msg.sender);
         emit Placed(msg.sender, id, room, slot);
     }
 
@@ -241,6 +250,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         if (id == 0) revert InvalidValue();
         delete f.loadout[room * 6 + slot];
         items().unequip(msg.sender, id);
+        _sync(msg.sender);
         emit Unplaced(msg.sender, id, room, slot);
     }
 
@@ -314,6 +324,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         uint256 price = params().get(Params.Key.OverclockPrice) * (uint256(x.overclock) + 1);
         _charge(msg.sender, price, wallet, 1);
         items().maintain(id, x.durability, x.overclock + 1);
+        _sync(msg.sender);
     }
 
     function expand(bool wallet) external nonReentrant {
@@ -329,6 +340,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         uint256 price = market().quote(ITokenPacks(packs()).price()) * 9000 / 10000;
         _charge(msg.sender, price, wallet, 3);
         farms[msg.sender].paid++;
+        _sync(msg.sender);
         farms[msg.sender].xp += 25;
         rewards().recordSales(1);
         id = ITokenPacks(packs()).tokenPack(msg.sender);
@@ -390,11 +402,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         return engine().stats(snap, room, false, rewards().epoch());
     }
 
-    function process(address p, uint256 e)
-        external
-        nonReentrant
-        returns (uint256 raw, uint256 productive, uint256 power)
-    {
+    function process(address p, uint256 e) external returns (uint256 raw, uint256 productive, uint256 power) {
         if (msg.sender != address(rewards())) revert Unauthorized();
         _roll(p, e);
         Farm storage f = farms[p];
