@@ -113,6 +113,12 @@ contract InvariantsTest is BaseTest {
     GameHandler private handler;
     bytes32 private freeRoot;
 
+    function freePackRoot() internal view override returns (bytes32) {
+        bytes32 a = keccak256(abi.encode(uint256(0), alice));
+        bytes32 b = keccak256(abi.encode(uint256(1), bob));
+        return a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
+    }
+
     function setUp() public override {
         super.setUp();
         fund(100_000_000 ether);
@@ -123,8 +129,7 @@ contract InvariantsTest is BaseTest {
         bytes32 a = keccak256(abi.encode(uint256(0), alice));
         bytes32 b = keccak256(abi.encode(uint256(1), bob));
         freeRoot = a < b ? keccak256(abi.encodePacked(a, b)) : keccak256(abi.encodePacked(b, a));
-        vm.prank(swarm);
-        d.starter.setFreeRoot(freeRoot);
+        assertEq(d.starter.freeRoot(), freeRoot);
         handler = new GameHandler(d, alice, bob);
         targetContract(address(handler));
         // Only real player EOAs originate transactions. Fuzzing protocol addresses as

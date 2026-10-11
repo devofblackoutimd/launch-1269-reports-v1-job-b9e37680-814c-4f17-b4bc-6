@@ -1,6 +1,6 @@
-# BLACKOUT v3.5
+# BLACKOUT v3.7
 
-Source-only continuation of v3.4. No deployment, broadcast, token launch or mint. [@IMDBlackout](https://x.com/IMDBlackout) · [playblackout.xyz](https://playblackout.xyz) · [free pack claim](https://playblackout.xyz/freepack).
+Source-only continuation of v3.6. No deployment, broadcast, token launch or mint. [@IMDBlackout](https://x.com/IMDBlackout) · [playblackout.xyz](https://playblackout.xyz) · [free pack claim](https://playblackout.xyz/freepack).
 
 Packs, rooms, repairs, enhancement and lobbying use the existing token. Prices follow the last settled mining yield with explicit floors. Packs and lobbying send 88% to rewards, 10% to the team and 2% to the capped heartbeat; the latter two shares queue for bounded sales through the official pool. Other spending returns entirely to rewards. ETH purchases use an atomic swap-and-pack zap with minimum output. The normal swap fee schedule is retained.
 
@@ -13,8 +13,8 @@ The code retains immutable deployment identities, exact creation-code enrollment
 - [Implementation report and open decisions](report.md)
 - [Pack options, simulations and limitations](artifacts/v35/simulation.md)
 - [Read API and game rules](docs/api-v35.md)
-- [Launch parameters and operations](docs/launch-v35.md)
-- [Independent contributor review](docs/review-v35-independent.md)
+- [v3.7 launch parameters, exact oracle bodies and operations](launch-v37.md)
+- [Independent v3.7 contributor review](docs/review-v37-independent.md)
 - [Entropy capture operations](docs/entropy-v34.md)
 - [Historical v3.4 report](docs/report-v34.md)
 
@@ -25,6 +25,9 @@ The existing compiler configuration (Solidity 0.8.26) and dependencies are uncha
 ```sh
 forge build
 python3 tools/pin_module_code.py --check
+python3 tools/pin_swarm_code.py --check
+python3 tools/check_v37_authority.py
+node test/oracle-v37.test.mjs
 forge test
 forge fmt --check
 python3 -m unittest discover -s test/python
@@ -37,8 +40,8 @@ After a Solidity change: format, build, regenerate module pins with `python3 too
 
 ## After launch
 
-This assignment authorizes no launch. The separately authorized deployer supplies the real existing token, official pool/launcher, immutable factory, swarm and reserved coordinates, and verifies the original 20% endowment path. The swarm selects the requester-approved pack profile before the first purchase using `PackSale.selectProfile(0..2)`; unset selection keeps purchases closed. The recommended profile is Balanced (1), not an approved deployment choice.
+Follow [launch-v37.md](launch-v37.md); earlier launch guides are historical. The requester supplies the existing token, launch identities and coordinates, and the frozen free-pack / Identity MD roots and snapshot. Balanced packs are fixed at deployment. No swarm wallet is supplied: every swarm authority points to the non-upgradeable SwarmDesk, whose only inputs are attested oracle answers. Both roots are constructor arguments; free claims retain the 30-day window.
 
-Within seven days of the authenticated launch, the swarm may set the free-pack Merkle root once with `StarterClaim.setFreeRoot(root)`. Build it from the actual approved list (maximum 500 unique wallets) using `tools/freepack_merkle.py`; publish its generated wallet proofs as `ui/allowlist.json`. Claims close 30 days after launch. No placeholder list is supplied.
+Ethereum-funded IMD schedules deliver four event answers per day and one weekly regulator (about 2.0714 IMD/day). Permissionless keepers execute committed answers and enable announced phases after notice. Anyone can top up SwarmDesk with Robinhood IMD for its rate-limited backup asks. No game administrator, signer key, root setter, profile selection or moderation path exists. Oracle endpoints and signer are immutable under this explicit no-admin policy.
 
 Publish the actual registry address for the dependency-free `ui/` app. Its wallet connection reads all modules from that registry and verifies the chain. Run native-block entropy capture continuously, epoch advancement every six hours, safe fee conversion when quotes are warm, and weekly preparation/settlement. Keepers supply gas; bounded heartbeat credits are not a service guarantee. Future-block entropy remains sequencer-influenced, not VRF.

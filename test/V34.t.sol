@@ -186,7 +186,7 @@ contract V34Test is BaseTest {
         assertEq(pool.available(), 0);
         vm.expectRevert();
         pool.fundEndowment();
-        token.approve(address(pool), principal);
+        token.transfer(address(pool), principal);
         pool.fundEndowment();
         assertEq(token.balanceOf(address(pool)), 2 * principal);
         assertEq(pool.available(), principal);

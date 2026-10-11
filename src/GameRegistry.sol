@@ -19,6 +19,7 @@ contract GameRegistry is IGameRegistry {
     address public immutable market;
 
     bytes32 public immutable starterRoot;
+    bytes32 public immutable freeRoot;
     uint256 public immutable snapshotBlock;
     uint256 public immutable endowment;
     IApplicationFactory public immutable factory;
@@ -31,18 +32,20 @@ contract GameRegistry is IGameRegistry {
         address params_,
         address market_,
         bytes32 root_,
+        bytes32 freeRoot_,
         uint256 snapshot_,
         uint256 endowment_,
         address factory_
     ) {
         if (
             token_ == address(0) || params_ == address(0) || market_ == address(0) || factory_ == address(0)
-                || root_ == bytes32(0) || snapshot_ == 0 || endowment_ > 250_000_000 ether
+                || freeRoot_ == bytes32(0) || root_ == bytes32(0) || snapshot_ == 0 || endowment_ > 250_000_000 ether
         ) revert InvalidValue();
         token = token_;
         params = params_;
         market = market_;
         starterRoot = root_;
+        freeRoot = freeRoot_;
         snapshotBlock = snapshot_;
         endowment = endowment_;
         factory = IApplicationFactory(factory_);

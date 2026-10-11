@@ -53,11 +53,10 @@ contract CivicV35Test is BaseTest {
         assertEq(d.billboards.escrow(), 0);
         Billboards.Billboard memory board = d.billboards.billboard(1, 0);
         assertEq(board.text, "DISTRICT ZERO");
-        vm.expectRevert(Unauthorized.selector);
-        d.billboards.blankBillboard(1, 0);
         vm.prank(swarm);
-        d.billboards.blankBillboard(1, 0);
-        assertEq(d.billboards.billboard(1, 0).text, "");
+        (bool ok,) = address(d.billboards).call(abi.encodeWithSignature("blankBillboard(uint256,uint256)", 1, 0));
+        assertFalse(ok);
+        assertEq(d.billboards.billboard(1, 0).text, "DISTRICT ZERO");
         vm.expectRevert(InvalidValue.selector);
         d.billboards.settleBillboard(1, 0);
     }

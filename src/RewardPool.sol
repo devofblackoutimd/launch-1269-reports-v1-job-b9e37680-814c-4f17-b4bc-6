@@ -59,19 +59,13 @@ contract RewardPool is GameModule, ReentrancyGuard {
         return balance > excluded ? balance - excluded : 0;
     }
 
-    /// @notice Count unaccounted tokens already transferred to the CREATE2 address by the launcher,
-    /// then transfer only any missing principal from the caller. Donations/buybacks/spend are excluded.
-    /// There is no balance-only activation path that can reuse ordinary game revenue as endowment.
+    /// @notice Start the drip only after the predicted pool has received its full principal.
+    /// No caller allowance or swarm funding fallback exists; ordinary inflows are excluded.
     function fundEndowment() external nonReentrant {
         uint256 principal = endowment();
         if (endowed || principal == 0) revert AlreadyDone();
-        uint256 before_ = token().balanceOf(address(this));
-        uint256 direct = before_ > otherInflow ? before_ - otherInflow : 0;
-        if (direct < principal) {
-            uint256 missing = principal - direct;
-            token().safeTransferFrom(msg.sender, address(this), missing);
-            if (token().balanceOf(address(this)) - before_ != missing) revert InvalidValue();
-        }
+        uint256 balance = token().balanceOf(address(this));
+        if (balance < otherInflow || balance - otherInflow < principal) revert InsufficientBalance();
         _startDrip();
     }
 

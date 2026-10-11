@@ -41,6 +41,7 @@ contract RegistryTest is BaseTest {
             address(d.params),
             address(market),
             keccak256("real test root"),
+            freePackRoot(),
             123,
             100_000_000 ether,
             address(f)

@@ -58,6 +58,7 @@ contract ReviewV34Test is BaseTest {
                 params_,
                 hook,
                 keccak256(abi.encode(uint256(17), alice)),
+                freePackRoot(),
                 uint256(23_000_000),
                 uint256(0),
                 address(bindingFactory)
@@ -88,10 +89,11 @@ contract ReviewV34Test is BaseTest {
         hook.bindFeeRouter(address(competing), 7, 1);
         assertEq(address(hook.fees()), address(0));
 
-        FeeRouter intended = canonicalFees(address(hook));
-        vm.prank(bob); // An arbitrary caller may bind the one committed, legitimate game.
-        hook.bindFeeRouter(address(intended), 7, 1);
-        assertEq(address(hook.fees()), address(intended));
+        // The production factory admits a launch number only once. A wrongly authorized
+        // configuration cannot be replaced at its reserved coordinate: stop that launch.
+        vm.expectRevert(AlreadyDone.selector);
+        bindingFactory.deploy(7, 1, hex"00");
+        assertEq(address(hook.fees()), address(0));
     }
 
     function testSameConfigurationAtUncommittedCoordinatesCannotBind() public {

@@ -32,17 +32,8 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     uint256 public sold;
-    uint8 public profile = 1;
-    bool public profileChosen;
-    event ProfileSelected(uint256 profile);
-
-    function selectProfile(uint8 choice) external {
-        if (msg.sender != params().swarmWallet()) revert Unauthorized();
-        if (sold != 0 || choice > 2) revert InvalidValue();
-        profile = choice;
-        profileChosen = true;
-        emit ProfileSelected(choice);
-    }
+    uint8 public constant profile = 1;
+    bool public constant profileChosen = true;
 
     /// @notice Values are yield-days (1e18), decay basis points/hour, sales/hour target.
     function profileParams(uint256 choice)

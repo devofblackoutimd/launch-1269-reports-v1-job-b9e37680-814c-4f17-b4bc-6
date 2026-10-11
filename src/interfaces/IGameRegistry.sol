@@ -8,6 +8,7 @@ interface IGameRegistry {
     function params() external view returns (address);
     function market() external view returns (address);
     function launchTime() external view returns (uint256);
+    function freeRoot() external view returns (bytes32);
     function starterRoot() external view returns (bytes32);
     function snapshotBlock() external view returns (uint256);
     function endowment() external view returns (uint256);

@@ -18,32 +18,25 @@ contract StarterClaim is GameModule, ReentrancyGuard {
         bool resolved;
     }
 
-    bytes32 public freeRoot;
+    function freeRoot() public view returns (bytes32) {
+        return registry.freeRoot();
+    }
     uint256 public freeClaimed;
     mapping(address => bool) public freeClaimedBy;
     mapping(uint256 => bool) public freeIndexClaimed;
-    event FreeRootSet(bytes32 root);
     event FreePackClaimed(address indexed player, uint256 indexed index, uint256 receipt);
-
-    function setFreeRoot(bytes32 root_) external {
-        if (msg.sender != Params(registry.params()).swarmWallet()) revert Unauthorized();
-        if (root_ == bytes32(0) || freeRoot != bytes32(0)) revert InvalidValue();
-        if (block.timestamp < launchTime() || block.timestamp > launchTime() + 7 days) revert TooEarly();
-        freeRoot = root_;
-        emit FreeRootSet(root_);
-    }
 
     function freeClaimEnds() public view returns (uint256) {
         return launchTime() + 30 days;
     }
 
     function claimFree(uint256 index, bytes32[] calldata proof) external nonReentrant returns (uint256 id) {
-        if (freeRoot == bytes32(0)) revert NotConfigured();
+        if (freeRoot() == bytes32(0)) revert NotConfigured();
         if (block.timestamp >= freeClaimEnds()) revert TooEarly();
         if (index >= 500 || freeClaimed >= 500 || freeIndexClaimed[index] || freeClaimedBy[msg.sender]) {
             revert InvalidValue();
         }
-        if (!MerkleProof.verifyCalldata(proof, freeRoot, keccak256(abi.encode(index, msg.sender)))) {
+        if (!MerkleProof.verifyCalldata(proof, freeRoot(), keccak256(abi.encode(index, msg.sender)))) {
             revert InvalidProof();
         }
         freeIndexClaimed[index] = true;

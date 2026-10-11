@@ -262,14 +262,9 @@ contract EconomyV35Test is BaseTest {
     }
 
     function testFreeAllowlistOnceWindowStarterScrapAndMetadata() public {
-        bytes32 root = keccak256(abi.encode(uint256(0), alice));
-        vm.expectRevert(Unauthorized.selector);
-        d.starter.setFreeRoot(root);
-        vm.prank(swarm);
-        d.starter.setFreeRoot(root);
-        vm.expectRevert(InvalidValue.selector);
-        vm.prank(swarm);
-        d.starter.setFreeRoot(root);
+        assertEq(d.starter.freeRoot(), freePackRoot());
+        (bool ok,) = address(d.starter).call(abi.encodeWithSignature("setFreeRoot(bytes32)", keccak256("replacement")));
+        assertFalse(ok);
         bytes32[] memory proof = new bytes32[](0);
         vm.expectRevert(InvalidProof.selector);
         vm.prank(bob);
@@ -321,26 +316,19 @@ contract EconomyV35Test is BaseTest {
         assertEq(d.season.potLiability(), q);
     }
 
-    function testFreeRootWindowIndexLimitAndUnsetState() public {
+    function testFreeRootWindowAndIndexLimit() public {
         bytes32[] memory proof = new bytes32[](0);
-        vm.expectRevert(NotConfigured.selector);
-        vm.prank(alice);
-        d.starter.claimFree(0, proof);
-        vm.prank(swarm);
-        d.starter.setFreeRoot(keccak256(abi.encode(uint256(500), alice)));
         vm.expectRevert(InvalidValue.selector);
         vm.prank(alice);
         d.starter.claimFree(500, proof);
         assertEq(d.starter.freeClaimed(), 0);
-        assertFalse(d.starter.freeClaimedBy(alice));
     }
 
-    function testFreeRootCannotBeSetAfterSevenDays() public {
+    function testFreeRootRemainsFrozenAfterSevenDays() public {
         vm.warp(tokenLaunch() + 7 days + 1);
-        vm.expectRevert(TooEarly.selector);
-        vm.prank(swarm);
-        d.starter.setFreeRoot(keccak256(abi.encode(uint256(0), alice)));
-        assertEq(d.starter.freeRoot(), bytes32(0));
+        (bool ok,) = address(d.starter).call(abi.encodeWithSignature("setFreeRoot(bytes32)", keccak256("replacement")));
+        assertFalse(ok);
+        assertEq(d.starter.freeRoot(), freePackRoot());
     }
 
     function testSystemSellDustCannotOccupyCadenceAndCappedHeartbeatReturnsTokens() public {

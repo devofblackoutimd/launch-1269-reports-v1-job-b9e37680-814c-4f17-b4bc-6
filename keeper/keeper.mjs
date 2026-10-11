@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// BLACKOUT v3.6 keeper. Node 22+, no dependencies. Reads RPC_URL and KEEPER_KEY only from an env
+// BLACKOUT v3.7 keeper. Node 22+, no dependencies. Reads RPC_URL and KEEPER_KEY only from an env
 // file outside the repository (default /etc/blackout/keeper.env, override with --env PATH).
 //
 //   node keeper.mjs status            read-only overview of what is due
@@ -10,6 +10,7 @@
 // disabled phase (locks, billboards, pot...) or a not-yet-due action never costs gas.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
+import {bytesCall,storedAnswer} from './lib/oracle.mjs';
 import { encodeCall, decodeWords, wordToAddress, keccak256, utf8, signTransaction, privateToAddress, bigToHex, word }
   from './lib/eth.mjs';
 
@@ -81,14 +82,15 @@ async function modules() {
   }
   out.market = await addr(REGISTRY, 'market()');
   out.params = await addr(REGISTRY, 'params()');
+  out.desk = await addr(out.params, 'swarmWallet()');
   return out;
 }
 
 // --------------------------------------------------------------- sending
 const log = (...m) => console.log(new Date().toISOString(), ...m);
-async function attempt(label, to, sig, a = []) {
+async function attempt(label, to, sig, a = [], rawData) {
   if (!to) return { label, ok: false, reason: 'module not registered' };
-  const data = encodeCall(sig, a);
+  const data = rawData || encodeCall(sig, a);
   try {
     await rpc('eth_call', [{ from: keeper || undefined, to, data }, 'latest']);
   } catch (e) {
@@ -128,6 +130,7 @@ async function scanCommits(m, state) {
     ['starter', m.starter, topic('StarterCommitted(uint256,address,uint256)')],
     ['enhance', m.enhancement, topic('EnhancementCommitted(uint256,address,uint256,uint256,uint256,uint256)')],
     ['season', m.season, topic('SeasonPrepared(uint256,uint256)')],
+    ['oracle', m.desk, topic('AnswerStored(uint8,bytes32,uint256,bytes)')],
   ];
   for (let low = start; low <= head; low += 2000) {
     const high = Math.min(head, low + 1999);
@@ -136,6 +139,9 @@ async function scanCommits(m, state) {
       const logs = await rpc('eth_getLogs', [{ address, fromBlock: bigToHex(BigInt(low)), toBlock: bigToHex(BigInt(high)), topics: [t] }]);
       for (const entry of logs) {
         if (entry.removed) continue;
+        if (kind === 'oracle') {
+          const result=storedAnswer(entry);state.oracleAnswers ??= {};state.oracleAnswers[result.stream]=result;continue;
+        }
         state.pending[`${kind}:${BigInt(entry.topics[1])}`] = [kind, BigInt(entry.topics[1]).toString()];
       }
     }
@@ -235,16 +241,35 @@ async function phaseDuties(m, results) {
   return flags;
 }
 
+async function oracleDuties(m,state,results) {
+  const status=[];
+  for(let stream=0;stream<2;stream++) {
+    const a=decodeWords(await call(m.desk,'lastAnswer(uint8)',[stream]));
+    const row={stream,hash:a[0],requestId:a[1],issuedAt:Number(a[2]),validUntil:Number(a[3]),slot:a[4],pending:a[5]===1n,receivedBlock:a[6]};
+    status.push(row);
+    let cached=state.oracleAnswers?.[stream];
+    if(row.pending&&(!cached||BigInt(cached.id)!==row.requestId)) {
+      const logs=await rpc('eth_getLogs',[{address:m.desk,fromBlock:bigToHex(row.receivedBlock),toBlock:bigToHex(row.receivedBlock),topics:[topic('AnswerStored(uint8,bytes32,uint256,bytes)'),'0x'+word(stream),'0x'+word(row.requestId)]}]);
+      for(const entry of logs) {cached=storedAnswer(entry);if(cached){state.oracleAnswers??={};state.oracleAnswers[stream]=cached;}}
+    }
+    if(row.pending&&cached&&BigInt(cached.id)===row.requestId) {
+      results.push(await attempt(`execute swarm ${stream===0?'event':'regulator'}`,m.desk,'execute(uint8,bytes)',[],bytesCall('execute(uint8,bytes)',stream,cached.answer)));
+    }
+  }
+  return status;
+}
+
 async function pass(m, state) {
   const results = [];
-  const epoch = await epochDuties(m, results);
   await scanCommits(m, state);
+  const oracle = await oracleDuties(m, state, results);
+  const epoch = await epochDuties(m, results);
   await entropyDuties(m, state, results);
   const season = await seasonDuties(m, results);
   const fees = await feeDuties(m, results);
   const flags = await phaseDuties(m, results);
   saveState(state);
-  return { epoch, season, fees, flags, results };
+  return { epoch, season, fees, flags, oracle, results };
 }
 
 const FEATURE_NAMES = ['district war', 'grid collapse', 'weekly lots', 'enhancement', 'locks/stake/lobby', 'billboards', 'season pot', 'reserved events'];
@@ -258,6 +283,10 @@ async function status() {
   console.log(`epoch ${out.epoch.epoch} live=${out.epoch.live === 1n} ends in ${Number(out.epoch.end) - now}s; week ${out.season.week}`);
   console.log(`fees: sell batch ${out.fees.sellBatch} tokens, reward ETH ${out.fees.rewardETH}, pot ETH ${out.fees.potETH}`);
   for (const f of out.flags) console.log(`feature ${f.feature} ${FEATURE_NAMES[f.feature]}: ${f.enabled ? 'ENABLED' : f.noticeAt ? `announced, opens ${new Date(f.noticeAt * 1000).toISOString()}` : 'disabled'}`);
+  console.log(`SwarmDesk ${m.desk}`);
+  for (const a of out.oracle) console.log(`oracle ${a.stream===0?'event':'regulator'}: last=${a.issuedAt?new Date(a.issuedAt*1000).toISOString():'none'} validUntil=${a.validUntil} pending=${a.pending} slot=${a.slot}`);
+  const oc=decodeWords(await call(m.desk,'oracleConfig()'));
+  console.log(`backup IMD balance ${await uint(wordToAddress(oc[3]),'balanceOf(address)',[m.desk])}; last failure ${await call(m.desk,'lastFailure()')}`);
   console.log(`pending entropy commits: ${Object.keys(state.pending).length}`);
   const due = out.results.filter((r) => r.ok);
   console.log(due.length ? `due now: ${due.map((r) => r.label).join(', ')}` : 'nothing due');
@@ -266,6 +295,13 @@ async function status() {
 async function main() {
   if (command === 'status') return status();
   const m = await modules();
+  if(command==='ask-backup') {
+    const name=flag('--stream','event');if(!['event','regulator'].includes(name))throw Error('--stream event|regulator');
+    const body=readFileSync(flag('--body',`docs/oracle-v37/${name}.json`));
+    const result=await attempt(`paid backup ${name}`,m.desk,'askBackup(uint8,bytes)',[],bytesCall('askBackup(uint8,bytes)',name==='event'?0:1,'0x'+body.toString('hex')));
+    console.log(result);return;
+  }
+  if(!['once','run'].includes(command))throw Error('Command: status, once, run, ask-backup');
   log(`keeper ${keeper || '(dry-run, unsigned)'} registry ${REGISTRY} rpc ${new URL(RPC).host}${dryRun ? ' DRY-RUN' : ''}`);
   const state = loadState();
   do {

@@ -14,6 +14,7 @@ contract PredictionV34Test is BaseTest {
             address(d.params),
             address(market),
             keccak256("snapshot"),
+            freePackRoot(),
             123,
             200_000_000 ether,
             20,
@@ -30,7 +31,9 @@ contract PredictionV34Test is BaseTest {
             1,
             bytes.concat(
                 type(GameRegistry).creationCode,
-                abi.encode(c.token, c.params, c.hook, c.starterRoot, c.snapshotBlock, c.endowment, c.factory)
+                abi.encode(
+                    c.token, c.params, c.hook, c.starterRoot, c.freeRoot, c.snapshotBlock, c.endowment, c.factory
+                )
             )
         );
         assertEq(deployed, registry);

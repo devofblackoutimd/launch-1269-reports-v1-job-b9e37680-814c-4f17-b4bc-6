@@ -8,10 +8,11 @@ contract EndowmentGameTest is BaseTest {
         d = deployment.deploy(
             Deploy.Config(
                 address(token),
-                swarm,
+                abi.encode(oracleFixture()),
                 address(market),
                 tokenLaunch(),
                 keccak256("endowed fixture root"),
+                freePackRoot(),
                 123,
                 2500,
                 200,
@@ -20,12 +21,11 @@ contract EndowmentGameTest is BaseTest {
         );
         market.configureLaunch(tokenLaunch(), address(d.fees));
         uint256 principal = 250_000_000 ether;
-        token.approve(address(d.pool), principal);
+        token.transfer(address(d.pool), principal);
         d.pool.fundEndowment();
         assertEq(d.pool.available(), 0);
         d.rewards.advanceEpoch();
-        vm.prank(swarm);
-        d.packs.selectProfile(1);
+        swarm = d.params.swarmWallet();
         uint256 packInflow = d.packs.price() * 88 / 100;
         payPack(alice);
         place(alice, 0, 0, 0);

@@ -41,13 +41,8 @@ contract Billboards is GameModule, ReentrancyGuard {
     event BillboardBid(
         uint256 indexed week, uint256 indexed district, address bidder, uint256 amount, string text, string handle
     );
-    event BillboardBlanked(uint256 indexed week, uint256 indexed district);
     event BillboardSettled(uint256 indexed week, uint256 indexed district, uint256 amount);
     constructor(address r) GameModule(r) {}
-    modifier onlySwarm() {
-        if (msg.sender != Params(registry.params()).swarmWallet()) revert Unauthorized();
-        _;
-    }
 
     function district(address p) public pure returns (uint256) {
         return uint256(keccak256(abi.encodePacked(p))) % 8;
@@ -128,13 +123,6 @@ contract Billboards is GameModule, ReentrancyGuard {
     function billboard(uint256 w, uint256 d) external view returns (Billboard memory) {
         if (d >= 8) revert InvalidValue();
         return boards[w][d];
-    }
-
-    function blankBillboard(uint256 w, uint256 d) external onlySwarm {
-        if (d >= 8) revert InvalidValue();
-        delete boards[w][d].text;
-        delete boards[w][d].handle;
-        emit BillboardBlanked(w, d);
     }
 
     function withdrawRefund() external nonReentrant {

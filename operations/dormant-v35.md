@@ -1,5 +1,7 @@
 # Restricted launch/operator notes: dormant modules
 
+v3.7 authority update: every reference to the swarm below means SwarmDesk acting on a verified oracle answer. There is no signing wallet or direct operator command. The frozen weekly policy and age eligibility are in [launch-v37.md](../launch-v37.md); ordinary module gates remain as described here. Pack readiness uses the fixed Balanced profile, with no profile-selection transaction.
+
 This file is an internal handoff, excluded from public site assets and public game documentation. Civic is registered at role 12 but all three optional modules begin disabled. No enable is executed by this assignment. Source and tests remain reviewable; hiding a UI does not hide on-chain bytecode.
 
 Each module has a one-time swarm `announce(module,letter)` and permissionless `enable(module)` after 48 hours. IDs: 0 war, 1 collapse, 2 black market. An announced module cannot be re-announced and an enabled module cannot be disabled or upgraded. Announcements require nonempty bounded text. All token escrows use the existing token, exact balance checks, CEI and pull claims. There is no emergency owner withdrawal.
@@ -12,4 +14,4 @@ Black market: swarm lists one lot per seven-day week, supply 1–3, kind 0–11,
 
 The public seasonal district promotion is also administered through Civic: at most once per season, one district, 0–15% output, seven-day duration. It is snapshotted by GridOperator and combined with any war boost; the maximum combined district boost is 25%. Rewards reserve a 150% gross-output envelope to cover that and the 15% maximum Green output. The boost redistributes within reserved mining emission; no tokens are minted.
 
-War/collapse/market activation, goals, lot choice and promotion choice remain explicit swarm operating decisions, not invented deployment parameters. Independent tests cover disabled calls, premature activation, repeated activation, contribution custody, immutable score snapshots, payout conservation, city result consumption, auction price/supply/expiry and pause behavior.
+War/collapse/market activation, goals, lot choice and promotion choice are bounded oracle fields in v3.7. The immutable weekly question defines the initial proposal policy; no human operator can override it. Independent tests cover disabled calls, premature activation, repeated activation, contribution custody, immutable score snapshots, payout conservation, city result consumption, auction price/supply/expiry and pause behavior.

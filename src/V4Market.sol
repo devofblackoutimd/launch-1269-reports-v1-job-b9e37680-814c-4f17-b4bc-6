@@ -126,7 +126,13 @@ contract V4Market is ReentrancyGuard {
         if (
             keccak256(
                     abi.encode(
-                        r.params(), r.starterRoot(), r.snapshotBlock(), r.endowment(), registryLaunch, registryIndex
+                        r.params(),
+                        r.starterRoot(),
+                        r.freeRoot(),
+                        r.snapshotBlock(),
+                        r.endowment(),
+                        registryLaunch,
+                        registryIndex
                     )
                 ) != gameConfigHash
         ) revert InvalidProof();
@@ -135,6 +141,7 @@ contract V4Market is ReentrancyGuard {
             r.params(),
             r.market(),
             r.starterRoot(),
+            r.freeRoot(),
             r.snapshotBlock(),
             r.endowment(),
             address(applicationFactory)

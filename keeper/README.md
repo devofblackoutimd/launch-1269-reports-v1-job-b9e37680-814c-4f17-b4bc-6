@@ -1,4 +1,4 @@
-# BLACKOUT keeper (v3.6 launch kit)
+# BLACKOUT keeper (v3.7 launch kit)
 
 A single-file Node 22+ keeper with **no npm dependencies** (`lib/eth.mjs` carries its own keccak-256,
 secp256k1 signing, RLP and ABI helpers; `node keeper.mjs` needs nothing installed beyond Node).
@@ -7,6 +7,7 @@ secp256k1 signing, RLP and ABI helpers; `node keeper.mjs` needs nothing installe
 
 | Duty | Calls | Notes |
 |---|---|---|
+| Oracle execution | Recover `AnswerStored` at the stored native block, verify matching UUID, then `SwarmDesk.execute(stream, answer)` | Runs before epoch advancement; the contract verifies the answer commitment and bounds |
 | Advance epochs | `FarmRewards.advanceEpoch()` when `live()` and `epochEnd()` has passed; `GridOperator.resolve(epoch)` if the event is still unresolved | Caller receives the epoch bounty from the heartbeat balance |
 | Pack entropy | scans `PackCommitted` logs, then `PackSale.captureEntropy(id)` or `rearm(id)` after the 256-block window | Capture is paid the entropy bounty; packs never lose value |
 | Starter entropy | `StarterCommitted` logs, `StarterClaim.captureEntropy` / `rearm` | Same window rules |
@@ -59,11 +60,21 @@ it is safe (the keeper rescans and skips completed work).
   `disabled`. If it throws "unregistered or codeless modules", registration is incomplete.
 - Keep one keeper per key (nonces are read from the node; two instances on one key would collide). A second
   VPS with its own key is fine and recommended for redundancy: all duties are permissionless and idempotent.
-- The keeper never calls `announce`, `submitPlan`, `setFreeRoot`, `selectProfile`, Params setters or any
-  swarm-only function. Those stay with the swarm wallet.
+- The keeper never calls `announce`, `submitPlan`, Params setters or any
+  swarm-only function. SwarmDesk alone can call those functions after verifying an oracle answer. Removed profile/root/moderation selectors are never called.
 
 ## Local test
 
 `test/scratch/smoke.mjs` (not shipped) signed and sent a value transfer against a local anvil and verified
 the recovered sender; `status` against a registry without code exits with the registration error. A full
 end-to-end run needs the deployed registry on Robinhood Chain.
+
+## Oracle backup and status (v3.7)
+
+`status` includes both last answer times, pending execution, UTC slots, failure status and SwarmDesk's Robinhood IMD balance. The UI shows the last answer vector and next epoch plan. No oracle signer key is used by the keeper.
+
+From the repository root, `node keeper/keeper.mjs ask-backup --stream event --dry-run --env /etc/blackout/keeper.env` simulates a paid backup. Use `--stream regulator` for the weekly question. A separately authorized operator removes `--dry-run` to send. `--body PATH` selects the exact committed compact body; the contract rejects any changed byte. Copy `docs/oracle-v37/` beside the installed keeper or use absolute `--body` paths. This assignment did not send either command on a live chain.
+
+A backup is available one hour into each UTC slot, at most once per slot, only if no answer was already accepted. A failed ask spends its price; no same-slot retry or refund. The endpoint price must be at or below the immutable maxPrice (0.5 IMD). Anyone may transfer Robinhood IMD to the Desk; there is no withdrawal. Funding this optional balance permits anyone to trigger its bounded schedule of asks. An unrelated gas payer may run all keeper duties; they gain no authority over the answer or modules.
+
+The schedule bodies and cadence are in [launch-v37.md](../launch-v37.md). Ethereum schedule balances and on-chain heartbeat ETH are separate. Schedule top-ups require an external payer; keeper gas accounts are not administrators.

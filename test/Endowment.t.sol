@@ -18,7 +18,7 @@ contract EndowmentTest is BaseTest {
     }
 
     function _fund() private {
-        token.approve(address(endowedPool), ENDOWMENT);
+        token.transfer(address(endowedPool), ENDOWMENT);
         endowedPool.fundEndowment();
     }
 

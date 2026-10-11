@@ -55,16 +55,39 @@ contract DeploymentTest is BaseTest {
         assertEq(items.capacity(alice), 15);
         vm.expectRevert(InvalidValue.selector);
         deployment.deploy(
-            Deploy.Config(address(0), swarm, address(market), launch, keccak256("root"), 123, 0, 200, 1 ether)
+            Deploy.Config(
+                address(0),
+                abi.encode(oracleFixture()),
+                address(market),
+                launch,
+                keccak256("root"),
+                freePackRoot(),
+                123,
+                0,
+                200,
+                1 ether
+            )
         );
     }
 
     function testForeignCallerDoesNotGetAnyAuthority() public {
         vm.prank(bob);
         Deploy.Deployment memory fresh = deployment.deploy(
-            Deploy.Config(address(token), swarm, address(market), launch, keccak256("root"), 123, 0, 200, 1 ether)
+            Deploy.Config(
+                address(token),
+                abi.encode(oracleFixture()),
+                address(market),
+                launch,
+                keccak256("root"),
+                freePackRoot(),
+                123,
+                0,
+                200,
+                1 ether
+            )
         );
-        assertEq(fresh.params.swarmWallet(), swarm);
+        assertNotEq(fresh.params.swarmWallet(), bob);
+        assertGt(fresh.params.swarmWallet().code.length, 0);
         assertEq(fresh.fees.team(), team);
         assertEq(fresh.pool.rewards(), address(fresh.rewards));
     }

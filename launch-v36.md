@@ -1,3 +1,5 @@
+> Historical v3.6 record. Superseded by [launch-v37.md](launch-v37.md); its wallet, profile, root-setting and endowment fallback steps no longer apply.
+
 # BLACKOUT v3.6 launch checklist — token launch to packs opening (no deployment performed here)
 
 Ordered. Each step names who acts. Values marked **requester** are not in this repository and must not be guessed.

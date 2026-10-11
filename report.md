@@ -1,89 +1,56 @@
-# BLACKOUT v3.6 implementation report
+# BLACKOUT v3.7 implementation report
 
-Source-only extension of job b29c69c8 (v3.5). No deployment, broadcast, token action or mint. Build configuration and dependencies unchanged. v3.5 behavior is kept except as listed.
+Source-only extension of v3.6 (job c379f49a). No deployment, broadcast, paid oracle request, schedule purchase, token action or mint was performed. Existing build configuration and dependencies are unchanged. The [previous report](docs/report-v36.md) preserves historical v3.6/v3.5 results; this report supersedes their wallet-based launch instructions.
 
-## Changes (phased release)
+## Delivered changes
 
-- `Civic` is the feature-flag registry: eight features (0–2 dormant modules unchanged; 3 enhancement, 4 locks + district stake + lobby, 5 billboards, 6 season token pot, 7 reserved Heatwave/Festival plans). Swarm `announce(feature, letter)` once, anyone `enable(feature)` after 48 hours, no disable path exists. `FarmCore` is untouched (24,330 bytes, 246 headroom); checks live in Enhancement.commit, Economy.lock / lobbyQuote (Core's lobby reverts through it), Billboards.bidBillboard, FeeRouter._route (pot share follows v3.4 routing into reward buys while disabled, `potEnabled()` view) and GridOperator.submitPlan (reserved kinds). New error `FeatureDisabled`. `IGameRegistry.registeredModule` exposed so FeeRouter never reverts on an unregistered Civic. Module pins regenerated.
-- Launch core active at launch: packs, ETH zap, gifts, rooms, mining, repair/auto-repair, ordinary events, scrap, free pack, starters, referrals, season best district + lottery, 1% best-farm prize. +12/+16 caps keep the existing announce/activate path.
-- Tests: `test/PhasedReleaseV36.t.sol` (launch-core fixture with nothing enabled): every flag disabled by default and core still mines; each feature reverts `FeatureDisabled` then works after enable; pot routing equals v3.4 while disabled; reserved plans; notice/once/never-off/swarm-only; fuzzed unannounced enable. Legacy fixtures enable 3–7 through the real notice path (`Base.enableFeature`). 223 tests pass, 1 optional fork test skipped; invariants unchanged and passing.
-- Launch kit: `keeper/` (Node 22+, zero dependencies, own keccak/secp256k1/RLP; env file outside the repo; `status`, `once`, `run`, `--dry-run`; systemd unit; README). Signing was smoke-tested against a local anvil (sent transaction confirmed, sender recovered). `launch-v36.md`: ordered checklist and the two application-job objective drafts.
-- Simulation `sim/run_v36.py` → `artifacts/v36/simulation-phases.md`: Balanced core alone (steady/weak/hype/drop50) then each phase. Maintain-only players stay profitable in every phase (steady core: 58.1M tokens mined net of repair, week-1 payback 3.75 days, team 3.58 ETH, 1.8% drawdown; drop50 49.4%). The model holds the 1.4× grower budget fixed, so core-only demand flows into packs/rooms; real willingness to spend without growth features is an open demand question.
-- `ui/`: reads Civic flags; disabled features render as "coming soon" teasers without details; dormant modules never shown.
+- **Oracle-only swarm authority.** New non-upgradeable SwarmDesk is Params.swarmWallet, which every swarm-gated module resolves. It has no owner, admin setter, arbitrary-call executor or withdrawal. Its permissionless one-time binding verifies canonical Registry/Params creation code, frozen game configuration, authenticated factory coordinates and Params pointing back to this Desk. The constructor makes no external calls and uses fourteen flat static words, compatible with the launcher's encoding and sixteen-word limit. Solidity and offline JavaScript helpers pack and validate the configuration. The launch uses a separate Desk bootstrap followed by the existing two eight-contract jobs because the factory admits at most eight contracts per job.
+- **Attested heartbeat.** Canonical 15-field EIP-712 attestation verification accepts only Intake or IntakeDelivery callers and the two precommitted question hashes. It checks context window, chain, panel agreement, current signed slot, current event epoch and freshness. Oracle UUIDs, transport ids and stream/slot quotas prevent repeated execution. Direct results additionally require an outstanding request created by Desk. Receipt verifies and stores under the protocol's 200,000-gas stipend; permissionless execution must present the exact committed answer bytes. Stale/duplicate answers never change policy. Failure callbacks cannot authorize actions.
+- **Bounded proposals.** Event vectors submit the original next two epochs without replacing an existing plan; district hints stay advisory and existing future-block entropy remains. Parameter updates retain hard bounds and 10%/24-hour steps. Civic features still require announcement plus 48 hours, and enhancement remains +8 → +12 → +16 with notice and 30-day steps. Existing optional pause, boost and dormant actions are available only through bounded oracle fields and retain module gates. No-answer event fallback is unchanged.
+- **Launch administration removed.** Packs are fixed to Balanced (1); selectProfile is removed. Free-pack and Identity MD roots/snapshot are immutable constructor inputs; setFreeRoot is removed and free claims retain the 30-day window. Billboard moderation is removed. RewardPool activation requires the full endowment already at its predicted address; it never pulls missing principal from a caller or swarm wallet. Ordinary accounted donations/revenue do not substitute for principal.
+- **Backup and operations.** Anyone may donate Robinhood IMD to Desk. A keeper can purchase only a byte-exact frozen requestWithFailure body, at most once per stream/UTC slot after an hour, using a price no higher than the constructor cap. Keeper status exposes the last answer, pending execution, balance and failure; its normal pass executes stored answers before advancing epochs. UI shows accepted oracle values and the next submitted plan or fallback. Gas payers receive no signing authority over proposals.
+- **Launch kit.** [launch-v37.md](launch-v37.md) provides verified protocol interfaces/addresses, exact question and answer definitions, deterministic body/hash tooling, schedule cadence/costs, ordered launch steps, bootstrap and A/B objective drafts, funding requirements and responsibilities. Canonical deployment artifacts must be used: recompiling the flattened hook changes embedded Registry metadata and breaks binding. [Contract sizes](artifacts/v37/byte-sizes.json) show every launch runtime below EIP-170; FarmCore source is untouched and its runtime remains 24,330 bytes, leaving 246 bytes. SwarmDesk is 17,157 bytes.
 
-## Open questions
+## Protocol verification and cost
 
-1. Independent second-contributor review of the v3.6 diff has not happened inside this job; it is required before launch (docs/review-v35-independent.md covers v3.5 only).
-2. Reserved events: v3.5 never allowed planning Heatwave/Festival; v3.6 reads "disabled at launch" as "plannable by the swarm once feature 7 is enabled". Confirm.
-3. Feature enabling after the notice is permissionless (keeper does it); only the announcement is swarm-only. Confirm this matches "the swarm role enables".
-4. Requester-only values remain unsupplied: swarm wallet, launcher/hook identities, Identity MD root/snapshot, allowlist, launch numbers.
+Current [IMD docs](https://imd.fun/docs/) and [capabilities](https://api.imd.fun/requests/capabilities) were checked on 2026-10-11. Intake v2, IntakeDelivery and the payment assets match the brief/reference. Read-only RPC verified the 0.5 IMD price and live Intake transport writer. The protocol attester is **0x5598aa9146215bc13eb26f2c692ad1461fd32982**, distinct from the transaction writer **0x3d3C0Df7C1a17d384545e9D7C8228897bD9625CB**. SwarmDesk uses the attester for signatures. The canonical consumer was copied with only an adapter for the existing OZ memory signature-checker API. Independent published digest/signature and five official question-hash vectors are permanent tests.
 
----
+| Heartbeat | Cadence | IMD cost |
+|---|---|---|
+| Event | Four per day | 2/day |
+| Regulator | One per week | 0.5/week |
+| Scheduled total | 29 requests/week | **14.5/week, approximately 2.07143/day** |
+| Initial balances in supplied schedule drafts | 28 event runs + 4 regulator runs | 14 + 2 IMD |
+| Example 30-day period with five weekly runs | 120 + 5 requests | 62.5 IMD |
+| Optional backup ceiling | At most another 29/week | Up to another 14.5/week |
 
-# BLACKOUT v3.5 implementation report (previous)
+Costs exclude chain gas and can change upstream; the fixed backup price ceiling makes a price increase fail safely. Failed requests consume their price, and no refund is promised. Relative observation windows would change question hashes, so recurring bodies use a verified fixed absolute context window and explicitly request current game state. Slot/epoch/freshness checks remain independent of that anchor. Anyone may pay for the exact pinned question; payer identity is not authenticated or claimed.
 
-Source-only extension of job 3470cfdb. No deployment, broadcast, token action, token replacement or mint was performed. The existing compiler, dependencies and build configuration remain unchanged.
+## Validation
 
-## Delivered behavior
-
-- Token-denominated packs and yield-day VRGDA profiles, gifts and atomic official-pool ETH zap. Readiness still requires authenticated launch +1h, funded endowment and exact hook/router binding; it additionally requires explicit profile selection.
-- 88/10/2 token pack/lobby routing, bounded official-pool system sales with only normal fees, 30-minute quote and 150 bps floor, five-minute cadence and live-depth sizing. Heartbeat retains its 1 ETH cap. Other spending recycles entirely to rewards; no token burns.
-- Tiered output, 1% active-epoch wear, six-hour-per-10% repair quote (bounded 4–8), optional credit-funded auto-repair, yield-priced room purchases behind existing gates, full mining for free starter items.
-- Committed future-block enhancement through +16, launch cap +8, exact failure/destruction table, level gates, re-arm without refund/retry, upward-only announced 30-day cap increases and shared enhancement/combo/set cap.
-- Escrowed 7/14/30-day locks, fixed-emission hash redistribution, capped district stake, three-day token lobby stability, corrected positive weighting for both Green wave and Cheap tariff.
-- Weekly token pots funded by half of sell surcharge, 40/30/30 allocation, distinct lottery winners, four-week claim expiry and rollover, existing separate best-farm mining prize, paid-only starter/prize scrapping.
-- Maximum-500 one-time Merkle allowlist, root publication within seven days and day-30 claim closure. On-chain soulbound item JSON/pixel SVG, owner enumeration, glow at +12, eight weekly token billboard auctions and moderation without fund control.
-- Reserved zero-weight Heatwave/Festival, once-per-season bounded district promotion, offline-tested dormant features in the existing Civic module. Dormant features are omitted from the public UI/game guide; operating details are in `operations/dormant-v35.md`.
-- Dependency-free `ui/` with token/gift/zap purchases, actual-list free claims, inventory/install/repair/enhancement, rooms/locks/lobby, entropy reveal, pot claims and billboard interaction. UI requires the published real registry and actual allowlist proofs; none were guessed.
-- Two application jobs of eight contracts each, plus separate custom-hook infrastructure if required. Exact creation-code registration and authenticated binding remain enforced. No upgrades or mutable registry setter exist. Core's registry reference is constructor-only storage to avoid Solidity 0.8.26's immutable patch-table compiler limit.
-
-## Economic results and pack decision
-
-Full reproducible tables: [simulation](artifacts/v35/simulation.md), [raw JSON](artifacts/v35/simulation.json), `python3 sim/run_v35.py`. Five deterministic seeds per profile/scenario, 35 days. The model includes hype/steady/weak, an external 50% price shock, join-week 1/2/3 payback, team ETH, drawdown, repair groups, enhancement caps, sinks, locks, token conservation and pot funding. These are conditional sensitivity results, not promised returns.
-
-| Pack profile | Start / floor / ceiling (average farm yield days) | Hourly decay / target per hour | Start-price maintenance payback |
-|---|---|---|---|
-| Accessible (0) | 3 / 1.5 / 6 | 3% / 20 | 3.42 days |
-| Balanced (1), recommended | 5 / 2.5 / 10 | 2% / 20 | 5.70 days |
-| Scarce (2) | 7 / 3.5 / 14 | 1% / 15 | 7.98 days |
-
-The requester chooses; `selectProfile` can switch before the first sale. No deployment choice was made. Balanced gives median steady cohort cash-equivalent payback of 3.75/3.75/3.75 days as the curve decays, team receipts around 3.497 ETH over 35 days, and 1.3% model drawdown; the external 50% shock case has 49.4% drawdown. Cash-equivalent payback includes unsold tokens at the current price, all external funding including repairs, and the mature minimum withdrawal tax; early actual withdrawals can take longer. Token price movements and different demand can make real outcomes worse.
-
-Default six-hour repair at an 80% threshold yields 87.75% of ideal after maintenance over 25 days, versus 53% unrepaired; repair costs 11.5% and incremental output is 4.02× cost. Governance extremes do not all meet the 85–90% target: four hours nets 91.6%, eight hours 83.9%. Floors can break profitability in exhausted/thin mining; there is no subsidy or guarantee.
-
-The separate discrete 35-day growth playbook produces 1.434× spending/mining (30.2% net market funding) with one enhancement attempt every two days, plus yield-priced rooms, inventory packs, weekly lobby and billboards, without forcing a spending ratio. Faster daily enhancement overspends that range; a three-day cadence falls below it. The city model’s growers use an explicit spending budget of 1.4× mined tokens: the resulting net market funding gap is 28.6% of spending, before recoverable lock capital. This demonstrates the desired required purchase share conditional on willingness to grow; it does not prove player demand. Balanced steady five-week sinks are approximately 65.3M packs, 16.7M repair, 24.8M rooms, 24.8M enhancement, 9.9M lobby and 5.0M billboards. Peak escrow is 20.0M tokens; system sales are 9.0M, 4.7% of mining.
-
-At assumed steady taxable turnover of 4 ETH/day and 3% surcharge, the weekly pot receives 0.421–0.435 ETH before token-buy execution. A 0.3–1 ETH/week pot needs about 20–66.7 ETH/week taxable sells at that surcharge. The separate 90-day unlock simulation activates +12 on day 30 and +16 on day 60. The +12/+16 per-item simulations show very high destruction and low cap attainment; they are optional spending goals, not profitable maintenance. Historical v3.4 results and differing demand assumptions are retained and compared explicitly in the simulation report.
-
-## Assumptions and open choices
-
-1. Requester selects pack profile 0/1/2; Balanced is recommended. Review the immutable 3,000-token average-farm bootstrap floor and tiny per-hash item quote floor before a separately authorized launch.
-2. Requester supplies the approved allowlist. Swarm sets its actual root once; no sample root or wallet list ships as production configuration.
-3. Actual token, hook/launcher/factory identities, swarm, NFT snapshot/root and deployment coordinates remain launch inputs from the prior design. The task supplies no authority to deploy or change those existing identities. Follow [launch-v35](docs/launch-v35.md) and verify real platform prediction and funding guarantees.
-4. Ten-percent district influence caps use uncapped district escrow as the denominator; excess capital remains refundable. This makes district bootstrap possible. Lock hash expires at maturity; grid stake persists until withdrawal. War chest score uses the same convention and frozen hash/rate.
-5. Pot expiry is four weeks after the competition settlement deadline (week end plus its existing seven-day grace). Claimable items and token awards revert together on inventory failure. Unused slots and rounding remain for rollover.
-6. Future native-block randomness preserves the brief and prior architecture; it remains sequencer-influenced, without a claim of production VRF. The keeper needs continuous block capture; expiry re-arms committed outcomes. No arbitrary caller seed, cancel or refund is added.
-7. Economic simulations are aggregate models, not full EVM strategy replay. Growth spending is a stated demand assumption; price shock is external repricing, not an impossible synthetic single trade. Full-rate maintenance percentages exclude unchanged withdrawal charges and use mild event damage.
-
-## Validation and independent review
-
-The pinned compiler is Solidity 0.8.26. Tests include success/failure paths for new purchases, escrow, slippage, pause, room/level gates, auto-repair, enhancement expiry/burn/caps, allowlist proofs/windows/provenance, pot allocation/rollback/rollover, billboard refunds and dormant operations. Existing hook-binding, actual local v4 PoolManager, endowment, lazy settlement, referrals, keeper economics, gas, pause and entropy suites remain. Stateful invariants reconcile supply/reserves, quote bounds, lock escrow, allowlist immutability and pot liabilities.
-
-A second contributor reviewed the implementation independently. War outcome dependence on late finalization, auto-repair season credit and item-yield floor precision were fixed, with permanent regression coverage. Zero-output tax redistribution was also corrected to follow productive hash. The review also caught Core runtime size; logic was split into existing modules to respect EIP-170. See [review record](docs/review-v35-independent.md). Tests are not a substitute for the separately authorized pre-release audit.
-
-Final local verification with the unchanged pinned configuration:
+All checks used the repository's unchanged pinned Solidity 0.8.26 configuration. No network is needed for default verification.
 
 | Check | Result |
 |---|---|
-| `forge clean` followed by `forge build` | Passed, Solidity 0.8.26 |
-| `forge test` | 215 passed, 0 failed, 1 optional historical fork skipped; 39 suites |
-| Stateful invariants | All seven passed; 128 runs × 64 calls, including supply, pricing, locks, allowlist and pots |
-| Fuzz cases | 256 runs per fuzz test, including independent eager/lazy settlement and reserved Festival bounds |
+| `forge build` | Passed |
+| `forge test` | **244 passed, 0 failed, 1 optional live-RPC fork skipped; 42 suites** |
 | `forge fmt --check` | Passed |
-| `python3 tools/pin_module_code.py --check` | All fourteen module hashes match final artifacts |
+| Module and Swarm creation-code pin checks | Passed |
+| Authority source scan plus deployed-graph/unauthorized-selector tests | Passed |
 | Python unit tests | 34 passed |
-| Node UI/reveal test files | 2 passed |
-| `python3 sim/run_v35.py` | Reproduced 60 city runs and repair, enhancement, growth and unlock studies |
-| `git diff --check` and protected-path comparison | Passed; no protected configuration/dependency changes |
+| Node oracle, reveal and UI test files | Passed |
+| Keeper/UI JavaScript syntax checks | Passed |
+| Protected paths and `git diff --check` | Passed |
 
-[Machine-readable verification and byte sizes](artifacts/v35/verification.json) records every launch contract. All runtimes fit 24,576 bytes, all creation bytecodes plus constructor arguments fit 49,152 bytes, constructors have at most eight arguments, and no external library links remain. The largest module, `FarmCore`, is 24,330 runtime bytes, leaving 246 bytes of headroom. The flattened hook source was refreshed from the final source. The local actual-v4-PoolManager suite ran; live-chain execution, Slither and Mythril were not performed.
+New success/failure tests cover forged, tampered and wrong-signer/domain/caller results; unknown direct ids; wrong question/window; insufficient agreement; UUID/source/slot replay; expired/old/future answers; malformed type/length; separate receipt and execution; modified execution bytes; later-slot recovery; cold Robinhood native-block callback under 200,000 gas; paid backup approval/price/body/rate limits; unsigned failure and timeout clearing; bounded event plans and fallback; all 45 Params keys under fuzzed targets; 48-hour feature releases and 30-day cap progression; immutable roots/profile; absent moderation/admin selectors; binding tampering and unique factory coordinates. Existing economic, hook, PoolManager, lazy-settlement, conservation and stateful invariant suites remain passing. Tests demonstrate local behavior, not production panel availability.
+
+A second contributor independently reviewed the v3.7 diff and ran focused verification: [review record](docs/review-v37-independent.md). Review corrections include packing constructor configuration into launcher-compatible static words, authenticating the factory's unique launch admission, preserving current-epoch liveness by reading native latest-minus-five rather than a lagging finalized tag, distinguishing attester from transport writer, documenting canonical artifacts, and adding adversarial tests. This is a bounded contributor review, not a comprehensive external audit. Slither/Mythril and paid production callback tests were not run.
+
+## Assumptions, open inputs and responsibilities
+
+1. **Requester/launcher supplies real launch inputs:** existing token/hook identities, canonical factory and reserved launch coordinates, both frozen lists/roots, Identity snapshot, and schedule target/ids. No production value was fabricated. Oracle config/body files are complete except routing that necessarily uses the real Desk address; the offline generator adds that routing when supplied.
+2. **No mutable rescue authority.** Endpoint, signer, action, asset, price ceiling and question commitments are constructor-frozen, as required by the no-admin brief. This intentionally supersedes the oracle reference's owner-settable example. A protocol migration requires a separately reviewed application replacement; fallback behavior remains available in the old deployment.
+3. **Initial policy is explicit.** Event proposals follow the existing fallback-kind table with severity 9000; the number is a public epoch salt. Weekly regulation targets conservative defaults, notices growth features at the documented ages, and makes dormant features eligible only at days 90/120/150. These immutable question-policy choices must be reviewed before launch. Existing on-chain safety limits apply even to a different attested numeric answer.
+4. **Endowment pre-funding is mandatory.** Preserve the approved 20% endowment at the predicted RewardPool. If the launcher cannot allocate there, stop the launch and select a separately reviewed direct-allocation path or revise the launch plan. There is no swarm wallet fallback.
+5. **Payers/operators own liveness.** Fund/refill Ethereum schedules and optional Robinhood backup IMD, sponsor execution gas, enable elapsed notices, capture entropy and advance epochs. Schedule creation, live admission/consumer-context rehearsal, site publishing and every transaction require separate authorization; none occurred here.
+6. **Trust and entropy limits remain.** Oracle truth relies on the external panel and one protocol attester; unavailable or stale answers leave bounded fallback. Existing future-block randomness remains sequencer-influenced, without a VRF claim. Exact deployment predictions rely on the authenticated factory allowing each reserved launch only once. Frozen roots and question policy cannot be repaired after launch.

@@ -102,6 +102,10 @@ contract GridOperator is GameModule, ReentrancyGuard {
         emit PlanSubmitted(e, kind, severity, number, letter);
     }
 
+    function planAt(uint256 e) external view returns (Plan memory) {
+        return plans[e];
+    }
+
     /// @notice Lobby contributions expire after three days; new spending extends the district boost.
     function lobbyAmount(uint256 d) public view returns (uint256) {
         Lobby memory l = lobbies[d];

@@ -8,9 +8,15 @@ const format = value => (Number(value)/1e18).toLocaleString(undefined,{maximumFr
 const status = text => { $('status').textContent=text; };
 const stringHex = value => {const bytes=new TextEncoder().encode(value);return word(bytes.length)+[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('').padEnd(Math.ceil(bytes.length/32)*64,'0');};
 const decodeString = value => {const offset=Number(BigInt('0x'+value.slice(2,66)))*2+2; const length=Number(BigInt('0x'+value.slice(offset,offset+64))); return new TextDecoder().decode(Uint8Array.from(value.slice(offset+64,offset+64+length*2).match(/../g)||[],x=>parseInt(x,16)));};
-let provider, wallet, modules={}, token, list, busy=false;
+let provider, wallet, modules={}, token, list, desk, busy=false;
 // Generated once from the public Solidity ABI; no remote JavaScript dependency.
 const selectors = {
+  'enabled(uint256)':'0x76e5c0de',
+  'planAt(uint256)':'0x6e922252',
+  'lastLetterHash()':'0xe24b9bc9',
+  'lastAnswer(uint8)':'0x1b7f4a70',
+  'swarmWallet()':'0x82d9f46f',
+  'params()':'0xcff0ab96',
   "ready()": "0x6defbf80",
   "place(uint256,uint256,uint256)": "0x52121153",
   "unplace(uint256,uint256)": "0xb1a6418e",
@@ -80,6 +86,7 @@ async function connect() {
  const registry=$('registry').value.trim();if(!address(registry))throw Error('Enter the published game registry in Game connection.');
  for(const role of [0,1,2,3,4,5,7,8,10,11,12,13]) {const result=await call(registry,'module(uint256)',[role]);modules[role]='0x'+result.slice(-40);}
  token='0x'+(await call(registry,'token()')).slice(-40);
+ const params='0x'+(await call(registry,'params()')).slice(-40);desk='0x'+(await call(params,'swarmWallet()')).slice(-40);
  $('connect').textContent=wallet.slice(0,6)+'…'+wallet.slice(-4);
  try{const response=await fetch('./allowlist.json',{cache:'no-store'});if(response.ok)list=await response.json();}catch{list=null;}
  await refresh();status('Connected. Quotes use the last settled mining rate.');
@@ -87,13 +94,33 @@ async function connect() {
 const phases={};
 // v3.6 phased release: enabled features show; disabled ones are a "coming soon" teaser; dormant modules never appear.
 async function applyPhases() {
- for(const el of document.querySelectorAll('[data-feature]')) {const f=Number(el.dataset.feature);phases[f]=phases[f]??Boolean(await uint(modules[12],'enabled(uint256)',[f]));
-  if(phases[f]){el.hidden=false;el.querySelector('.teaser')?.remove();}
+ for(const el of document.querySelectorAll('[data-feature]')) {const f=Number(el.dataset.feature);phases[f]=Boolean(await uint(modules[12],'enabled(uint256)',[f]));
+  if(phases[f]){el.hidden=false;el.querySelector('.teaser')?.remove();for(const c of Array.from(el.children))c.hidden=false;}
   else{el.hidden=false;if(!el.querySelector('.teaser')){const t=document.createElement('p');t.className='teaser';t.textContent=el.dataset.teaser;for(const c of Array.from(el.children))c.hidden=true;el.append(t);}}}
+}
+const EVENT_NAMES=['Calm','Outage','Surge','Fire','Theft','Audit','Green','Cheap','Heatwave','Festival'];
+async function refreshSwarm() {
+ if(!desk)return;
+ const [event,regulator,epoch,letter]=await Promise.all([call(desk,'lastAnswer(uint8)',[0]),call(desk,'lastAnswer(uint8)',[1]),uint(modules[1],'epoch()'),call(desk,'lastLetterHash()')]);
+ const entries=[['Event',words(event)],['Regulator',words(regulator)]];
+ const summaries=await Promise.all(entries.map(async([label,a])=>{
+  if(!a[2])return `${label}: no answer yet`;
+  const block='0x'+a[6].toString(16);
+  let logs=[];try{logs=await provider.request({method:'eth_getLogs',params:[{address:desk,fromBlock:block,toBlock:block,topics:['0xd2ea08b0365395dc0170ec82f63022befc31a673700c0106372066335219b63f',null,'0x'+word(a[1])]}]});}catch{/* Receipt metadata still renders if this RPC does not serve logs. */}
+  const log=logs.find(x=>!x.removed);let detail='';
+  if(log){const raw=words(log.data);const v=raw.slice(5);detail=label==='Event'?` · base epoch ${v[1]}, kind ${v[2]}, severity ${v[3]}, district hint ${v[4]}`:` · feature code ${v[9]}, cap step ${v[10]}`;}
+  return `${label}: ${new Date(Number(a[2])*1000).toLocaleString()}${detail}${a[5]===1n?' · awaiting execution':''}`;
+ }));
+ $('swarmAnswer').textContent=summaries.join(' | ');
+ const p=words(await call(modules[7],'planAt(uint256)',[epoch+1n]));
+ // A dynamic Plan tuple has an outer offset, then kind,severity,number,letter offset,submitted.
+ $('nextPlan').textContent=p[5]===1n?`Epoch ${epoch+1n}: ${EVENT_NAMES[Number(p[1])]} · severity ${p[2]} / 10000`:`Epoch ${epoch+1n}: autonomous fallback (no submitted plan)`;
+ $('swarmLetter').textContent=BigInt(letter)!==0n?`Last applied letter hash: ${letter}`:'No off-chain letter attached to the last applied answer.';
 }
 async function refresh() {
  if(!wallet||!modules[4])return;
  await applyPhases();
+ await refreshSwarm();
  const [price,daily,pending,open,epoch]=await Promise.all([uint(modules[4],'price()'),uint(modules[10],'farmDaily(address)',[wallet]),uint(modules[1],'pending(address)',[wallet]),uint(modules[4],'ready()'),uint(modules[1],'epoch()')]);
  $('packPrice').textContent=format(price)+' tokens';$('daily').textContent=format(daily)+' tokens';$('pending').textContent=format(pending)+' tokens';$('saleStatus').textContent=open?'Open · epoch '+epoch:'Closed / paused';
  const listed=list?.claims?.[wallet.toLowerCase()];const root=await call(modules[5],'freeRoot()');const claimed=await uint(modules[5],'freeClaimedBy(address)',[wallet]);

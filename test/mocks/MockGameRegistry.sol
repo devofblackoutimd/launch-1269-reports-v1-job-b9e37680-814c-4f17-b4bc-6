@@ -10,6 +10,7 @@ contract MockGameRegistry is IGameRegistry {
     address public market;
     uint256 public launchTime;
     bytes32 public starterRoot;
+    bytes32 public freeRoot = keccak256("mock free root");
     uint256 public snapshotBlock;
     uint256 public endowment;
     mapping(uint256 => address) private modules;

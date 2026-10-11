@@ -12,12 +12,14 @@ import {FarmItems} from "../src/FarmItems.sol";
 import {PackSale} from "../src/PackSale.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockGameRegistry} from "./mocks/MockGameRegistry.sol";
+import {SwarmDesk} from "../src/SwarmDesk.sol";
 import {Params} from "../src/Params.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import "../src/lib/Errors.sol";
 
 abstract contract BaseTest is Test {
     Deploy.Deployment internal d;
+    SwarmDesk internal desk;
     Deploy internal deployment;
     LocalApplicationFactory internal bindingFactory;
     MockToken internal token;
@@ -48,10 +50,11 @@ abstract contract BaseTest is Test {
         d = deployment.deploy(
             Deploy.Config(
                 address(token),
-                swarm,
+                abi.encode(oracleFixture()),
                 address(market),
                 launch - 1 hours,
                 keccak256(abi.encode(uint256(17), alice)),
+                freePackRoot(),
                 23_000_000,
                 0,
                 200,
@@ -71,8 +74,8 @@ abstract contract BaseTest is Test {
         token.approve(address(d.farm), type(uint256).max);
         vm.prank(bob);
         token.approve(address(d.farm), type(uint256).max);
-        vm.prank(swarm);
-        d.packs.selectProfile(1);
+        swarm = d.params.swarmWallet();
+        desk = SwarmDesk(swarm);
         // v3.6 ships growth features disabled; legacy fixtures enable them through the real notice path.
         if (launchFeatures()) {
             for (uint256 i = 3; i < 8; ++i) {
@@ -88,6 +91,24 @@ abstract contract BaseTest is Test {
         vm.prank(bob);
         token.approve(address(d.economy), type(uint256).max);
         d.rewards.advanceEpoch();
+    }
+
+    function freePackRoot() internal view virtual returns (bytes32) {
+        return keccak256(abi.encode(uint256(0), alice));
+    }
+
+    function oracleFixture() internal returns (SwarmDesk.OracleConfig memory o) {
+        o.intake = makeAddr("intake");
+        o.delivery = makeAddr("delivery");
+        o.signer = vm.addr(0x123456);
+        o.asset = address(token);
+        o.action = bytes32("oracle.request@oracle-1");
+        o.maxPrice = 0.5 ether;
+        o.questionChain = 1;
+        o.fromBlock = 100;
+        o.toBlock = 200;
+        o.questions = [keccak256("event question"), keccak256("regulator question")];
+        o.bodies = [keccak256("event body"), keccak256("regulator body")];
     }
 
     /// @dev Override to return false for a launch-core fixture (v3.6 phased release, nothing enabled).
@@ -157,6 +178,7 @@ abstract contract BaseTest is Test {
             abi.encode(
                 address(d.params),
                 keccak256(abi.encode(uint256(17), alice)),
+                freePackRoot(),
                 uint256(23_000_000),
                 uint256(0),
                 uint64(7),
@@ -173,6 +195,7 @@ abstract contract BaseTest is Test {
                 address(d.params),
                 hook_,
                 keccak256(abi.encode(uint256(17), alice)),
+                freePackRoot(),
                 uint256(23_000_000),
                 uint256(0),
                 address(bindingFactory)
