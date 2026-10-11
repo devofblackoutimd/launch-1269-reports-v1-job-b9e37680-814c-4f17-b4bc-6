@@ -1,108 +1,77 @@
-# BLACKOUT
+# BLACKOUT v3
 
-Immutable Solidity game contracts, a deterministic economy reconstruction, Foundry tests, and deployment scripts. **Nothing has been deployed. No game ERC-20 is created, replaced, or minted by this project.** The future IMD token is supplied as a constructor parameter.
+Immutable, ownerless game contracts for the existing IMD launch token. **No deployment, broadcast, token creation, replacement, or ERC-20 mint occurred in this assignment.** The build configuration and vendored dependencies are unchanged.
 
-Read [report.md](report.md) for verification results and limitations, [docs/design.md](docs/design.md) for accounting, [docs/simulation-assumptions.md](docs/simulation-assumptions.md) for model provenance and approximations, and [artifacts/simulation.md](artifacts/simulation.md) for reconstructed economy results.
+Read [report.md](report.md) for implementation changes, parameters, economic outcomes and remaining launch decisions; [regulator.md](regulator.md) for operating rules; [design](docs/design.md) for accounting and gameplay; and [security review](docs/security-review.md) for the independent contributor's findings and repairs.
 
-## Reproduce without network
+## Reproduce
 
-The dependencies are vendored as ordinary source files. Foundry must have the compiler pinned by `foundry.toml`, **Solidity 0.8.26**. There is no FFI or filesystem permission configuration.
+Foundry uses the existing pinned Solidity **0.8.26**, Cancun, optimizer and via-IR configuration. Dependencies are already ordinary repository files; no network is needed for the default checks once that compiler is installed.
 
 ```sh
 forge build
 forge test
 forge fmt --check
-python3 sim/blackout_sim_v2.py --check
+python3 sim/blackout_sim_v3.py --check
 python3 -m unittest discover -s test/python -v
-python3 sim/blackout_sim_v2.py
+python3 sim/blackout_sim_v3.py
+python3 tools/regulator.py --example
 ```
 
-The optional Robinhood fork smoke test is skipped on other chains. It reads native ArbSys results through the selected fork RPC and replays them into the local EVM, which does not itself execute ArbOS. To run it with a working RPC and Foundry:
+The optional live Robinhood smoke test uses the public RPC explicitly:
 
 ```sh
-forge test --fork-url "$ROBINHOOD_RPC_URL" --match-contract RobinhoodForkTest -vv
+forge test --fork-url https://rpc.mainnet.chain.robinhood.com --match-contract RobinhoodForkTest -vv
 ```
 
-An initial direct RPC probe returned HTTP 403, but the explicit Foundry fork run subsequently **passed the native ArbSys number/hash smoke test**. Local tests additionally cover ArbSys-versus-L1 block numbering and real vendored Uniswap v4 PoolManager integration. The smoke test is not a full application test against the eventual launch token and market configuration.
+It is skipped in the offline suite on other chains. It reads native ArbSys block numbering/hash on chain 4663, then replays those results into Foundry's EVM, which does not implement ArbOS. This is a chain primitive smoke test, not a deployment or a full test against the future token/pool. Real vendored Uniswap v4 PoolManager integration is tested locally for both market paths.
 
-## Contracts and authority
+## Immutable application graph
 
-| Contract | Purpose / authority |
+`script/Deploy.s.sol:deploy(Config)` is a **local construction helper**, tested with explicit inputs. It does not read the environment or broadcast. Its eleven deployments, in order, are Params, RewardPool, FarmRewards, FarmCore, FarmItems, PackSale, StarterClaim, FeeRouter, GridOperator, Season, FarmEngine. The helper predicts its own CREATE nonces so circular immutable references agree. It is not a deployable on-chain factory; its large script bytecode is not an application contract. A launch system must reproduce its own complete creator/nonce address plan.
+
+The six required configuration fields are:
+
+| Field | Supplied by launch operator |
 |---|---|
-| `Params` | Only the immutable `swarmWallet` changes numeric settings, within hard bounds and at most 10% relative change per key per 24 hours. |
-| `FarmItems` | ERC-1155 equipment and room keys; immutable metadata. Only `PackSale` mints paid items; only `StarterClaim` mints Starter items. |
-| `PackSale` | ETH and reward-funded packs, beta limits, permissionless future-block resolution, and paid-item merges. Only new pack commitments can be paused by swarm; max 72 hours, no extension, then 24 hours before another pause. |
-| `StarterClaim` | Immutable snapshot root and block; one claim per snapshot tokenId, hour 48 through before day 16. Anyone resolves the randomness. |
-| `FarmCore` | Player-owned item escrow and placement, room bonuses, upkeep prepay, repairs, overclock, token packs, token lobbying, and referrer registration. Anyone can refresh a farm. |
-| `FarmRewards` | Permissionless emission/settlement, daily reward vintages, player claims, funded referrals, and permissionless inspection selection/payment. |
-| `RewardPool` | Donation-only funding from users; reserves and payouts restricted to immutable `FarmRewards`. No administrative withdrawals. |
-| `Generator` | Voluntary seven-day token pledge; only the depositing player retrieves principal. No administrator, slash, or pause. |
-| `GridOperator` | Swarm submits bounded event types and herald content hashes/URIs. Anyone resolves future-block districts or applies overdue Calm. Players lobby their own district. |
-| `FeeRouter` | Immutable ETH splits, pull credits, TWAP-constrained buybacks. Current team address can only change its own future fee recipient. Old credits stay with their original payee. |
-| `BurnVault` | Irretrievable token sink. This locks tokens; it does not call or alter ERC-20 `totalSupply()`. |
-| `V4Market` | Optional combined v4 launch hook, arithmetic ETH/token TWAP, progressive sell fee, and system buy adapter. Immutable pool and recipients. |
-| `MarketFactory` | Optional permissionless CREATE2 deployment of a correctly flagged `V4Market`. No game privileges. |
+| `token` | Actual existing launch ERC-20; 18 decimals, plain transfers, no rebasing or transfer tax. |
+| `swarmWallet` | Actual immutable Grid Operator address. It controls bounded numbers and event plans only. |
+| `market` | Verified custom `V4Market`, or `StandardAdapter` for the actual standard IMD hook and oracle. |
+| `launchTime` | Actual token-launch timestamp, used for starter window, VRGDA and calendar seasons. |
+| `starterRoot` | Root of actual Identity MD tokenId/holder snapshot at launch; publish source and proofs. |
+| `snapshotBlock` | Actual snapshot block represented by that root; reconcile chain/time if collection and token differ in chain. |
 
-No owner, proxy, upgrade function, arbitrary-call executor, administrative NFT mint, or administrative pool withdrawal exists. Claims, Generator unlocks, item exits, and fee-credit withdrawals have no pause check. Standard token transfers and permissionless accounting catch-up must still succeed.
+No addresses, roots, keys or IDs for the eventual deployment are guessed. Tests contain explicitly test-only mocks and identities. The fixed team is `0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007`; there is no team-change setter. Heartbeat ETH funds permissionless epoch callers, rather than a configured recipient.
 
-## Play / integration API
+Application constructors have at most eleven inputs, check missing inputs locally, and do not call external contracts. All external services and immutable wiring must be validated before launch; no owner can repair configuration afterward. The engine is a separate immutable calculation contract, not a delegatecall module or upgrade point.
 
-- Approve `FarmCore` as the ERC-1155 operator. `PackSale.openPack(n)` requires exactly `price()*n` ETH; anyone calls `resolve(id)` after its target block.
-- Six equipment types use kind numbers GPU **0**, ASIC **1**, Power Supply **2**, Cooling **3**, Motherboard **4**, Router **5**; Room Key is **6**. `place(id, room, slot)` uses rooms 0–3 with `slot == kind`. Room **4** means standalone mining, with slots 0–39. There is a combined 40-equipment cap. Room 0 is free; install a key for each additional room.
-- Every equipment type mines without a room or another item. Room keys unlock space and do not themselves produce hash. `unplace` returns the exact item to its player. A key can be removed only from an empty room. Withdrawn slot overclocks are discarded.
-- Call `setReferrer(inviter)` once before placing mining equipment. The inviter must have an older registered farm, preventing cycles. A pack purchase can register a farm before equipment placement.
-- `FarmRewards.settle(player, maxDays)` and `checkpoint(maxTicks)` can be called by anyone. `claim(amount)` consumes the caller's oldest credited rewards first. The frontend should settle before displaying spendable pending balances.
-- `FarmCore.spend(kind, room, slot, units)` consumes unclaimed rewards with 5% extra purchasing power. Kind numbers: **0** slot overclock (`units=1`), **1** repair (`units=points`), **2** electricity (`units=nominal token base units`), **3** lobby (`units=nominal token base units`), **4** one token-paid pack (`units=1`). No withdrawal tax is charged on spending.
-- `payMaintenance(isRepair, units)` pays from the player's wallet without the reward-spend discount; this permits revival after inactivity even without pending rewards. Approve the game token to `FarmCore` for that payment. `PackSale.merge(id)` burns three identical unplaced paid equipment items and mints one next rarity, charging two days of the result's yield from pending rewards.
-- Approve the game token to `Generator`, then `lock(amount)` with at least `FarmCore.generatorRequirement(player)`. The seven-day deadline is immutable for that pledge. `unlock()` returns all principal after it. This is a pledge, not yield-bearing staking.
-- `StarterClaim.claim(tokenId, proof)` verifies the caller against the snapshot holder. Later NFT sales do not transfer this entitlement. Starter equipment is soulbound except custody movement into/out of that same player's farm; it mines at half hash until a normal paid pack resolves. Token-paid packs count as paid packs.
+## Choose exactly one swap-fee integration
 
-## Deployment inputs
+| Path | Project fee | Network | Progressive surcharge | Required integration |
+|---|---:|---:|---|---|
+| Preferred custom | 2%: 1% team, 1% pool-buy | 0.25% | Sell only; total fee capped at 15% | Launch explicitly supports `V4Market` as its combined hook. |
+| Standard fallback | 1%: 0.5% team, 0.5% pool-buy | 0.25% | None | Existing IMD hook forwards its 1% project ETH to `FeeRouter`; `StandardAdapter` buys through that exact hook. |
 
-`script/Deploy.s.sol:Deploy.run()` reads these **required** environment variables, with no fallback addresses, IDs, roots, or private keys:
+`StandardMarket` is an executable reference implementation for the fallback fee schedule, including tests. It is **not** a replacement for a platform hook when custom hooks are disallowed. `StandardAdapter` is the actual integration adapter for that situation. Its constructor takes manager, token, 30-minute oracle, FeeRouter, existing standard hook and tick spacing. The oracle implements `consult(poolId)` with token units per ETH, last observation time and observation window; the adapter rejects zero, stale, future or short-window results. The real oracle implementation/address is a launch prerequisite and must be checked independently.
 
-| Variable | Value supplied and verified by the launch operator |
-|---|---|
-| `TOKEN` | The actual future IMD game token; ordinary, non-rebasing, non-taxed ERC-20 transfers. No replacement token is deployed. |
-| `SWARM_WALLET` | The swarm's chosen Grid Operator address. Immutable. |
-| `HEARTBEAT_RECIPIENT` | Heartbeat ETH fee recipient. Immutable. |
-| `TEAM` | Initial team ETH fee recipient; only that address can later call `changeTeam`. |
-| `MARKET` | Verified immutable `IMarket` adapter for this exact token, providing a 30-minute TWAP and actual output-checked buys. Can be a correctly configured `V4Market`. |
-| `LAUNCH_TIME` | Future Unix timestamp, UTC. All windows derive from it. |
-| `STARTER_ROOT` | Nonzero root built from the actual Ethereum snapshot. Not an example root. |
-| `SNAPSHOT_BLOCK` | The actual Ethereum snapshot block. |
-| `DEPLOYER` | The intended deployment account; used only to record the correct transaction sequence and predict immutable CREATE wiring. It receives no game privilege. |
+Custom `V4Market` requires PoolManager, token, Params, FeeRouter, actual network recipient, zero LP fee and tick spacing. `MarketFactory` is a permissionless CREATE2 helper for address flags `0x10cc`; `script/DeployMarket.s.sol` takes explicit arguments and has no broadcast path. Only exact-input swaps are supported. PoolManager protocol/LP fees must not add fees outside the disclosed cap. Do not layer project fees on another fee-charging hook.
 
-The script's `deploy(Config)` function is tested directly with explicit test-only configuration and from an unrelated caller. `run()` is a dry run under ordinary `forge script`; this assignment does **not** authorize `--broadcast`. No launch manifest is included.
+Resolve custom market/game address dependencies before deployment; initialize native ETH/token liquidity and allow **31 minutes** of observed history before its 30-minute TWAP quotes. The standard path requires an independently verified 30-minute source for the exact pool. No live hook support or final market address has been asserted here.
 
-There are eleven sequential application deployments. Their constructor links are predicted from the actual creator's nonce, checked locally, and cannot be rewired afterward. The script is not an on-chain factory and its own aggregate bytecode must not be deployed. If the network launcher deploys contracts individually, it must reproduce the complete immutable address plan rather than use the script's address as an owner.
+## Client sequence
 
-### Optional v4 market
+1. Anyone calls `FarmRewards.advanceEpoch()` at launch, then at/after each six-hour end. It closes at most one epoch and starts the next at the call time; gaps do not earn mining. Finish the previous epoch with `processEpoch(1..8)` until `ready()` before farm loadout/spending changes or another advance.
+2. Buy `PackSale.openPack(n)` with exactly `quote(n)` ETH. There are no wallet, daily, token-pack or total sales caps. Resolve after native block N+2 using `resolve(id,1..8)`, making room for three items per pack. A large receipt can be opened over multiple calls.
+3. Equip `FarmCore.place(id,room,slot)`, with zero-based room 0–3 and slot 0–5. Each room accepts any types without duplicates. Query `roomUnlocked(player,index)` for each independent gate; paid XP can unlock a later room before the age-gated room, so the unlocked count is not a contiguous prefix. Approvals are unnecessary and disabled: Core alone moves items between a player and that player's farm.
+4. Loadout, ordinary repairs, overclock and paid-account status are snapshotted per epoch; changes take effect for the next epoch. Cable repair restores only the remaining portion of an ongoing theft epoch. Equip or buy before the first active epoch to establish a farm.
+5. Spend with Core's `buyTokenPack`, `repair`, `repairCable`, `overclock`, `expand`, `merge`, or `lobby`. `wallet=true` uses approved ERC-20; `false` uses internal rewards with 5% additional purchasing power. Every consumed token goes to the pool. Electricity is automatically recycled from mining.
+6. `FarmRewards.claim(amount)` withdraws already credited rewards at any time, subject to each credit's age tax. New credits appear after each epoch's bounded settlement. Full inventory does not stop mining or pull payments. `scrap(id,minimum)` permits an unequipped, unlocked item exit with a slippage-protected, allowance-capped reward.
+7. Resolve supply drops and weekly entitlements when inventory has space. `Season.prepare(week,1..64)` and `finalize(week)` are permissionless; expired lottery entropy requires `rearm(week)` and a new future block, rather than a predictable prize seed.
 
-The existing IMD launch integration must explicitly select this combined hook. **Do not layer it on another hook that already charges the 1.25% policy fee.** This implementation charges that total base fee itself, sends 0.25% to the configured network recipient, and routes the other 1% into the game's fee router. It supports exact-input swaps; exact-output swaps revert. The pool LP fee is fixed at zero to avoid adding an uncounted LP fee to the disclosed cap. The v4 PoolManager's own external governance remains outside BLACKOUT.
+Snapshot tooling is retained: `python3 tools/starter_merkle.py owners.csv --snapshot-block BLOCK --collection ADDRESS`. Leaves are `keccak256(abi.encode(uint256 tokenId,address holder))`, with sorted pairs. This attests snapshot ownership; it does not bridge collection state on demand. Publish the actual collection identity and snapshot provenance with the root.
 
-`V4Market` constructor inputs are PoolManager, token, Params, FeeRouter, network recipient, zero LP fee, and positive tick spacing ≤ 32767. Confirm that the launch system supports this hook and provides the correct network fee recipient. No address for those external services has been guessed. Its low address bits must be **0x10cc**. `MarketFactory` can find and deploy a valid CREATE2 salt from the exact constructor configuration; `script/DeployMarket.s.sol` reads `MARKET_FACTORY`, `POOL_MANAGER`, `TOKEN`, `PARAMS`, `FEE_ROUTER`, `NETWORK_RECIPIENT`, `TICK_SPACING`, `MARKET_SALT`, and `DEPLOYER`.
+## After launch
 
-Resolve the address plan before launch: predict the game's Params/FeeRouter, compute the market CREATE2 address with those immutable links, then use that market address in the application configuration. The market may be deployed before or after the application, but both must exist and agree before the future launch timestamp. Initialize the native ETH/token pool with this hook and sufficient liquidity; wait for **31 minutes of price history** before token packs or buybacks can obtain a quote. Trading can proceed during warm-up using the imbalance fee terms; the deviation term starts when the TWAP is ready.
+The launch operator verifies external contracts, hook policy, immutable graph, pool fees/liquidity, snapshot and runtime hashes. The swarm runs the dry-run regulator, supplies plans for the next two epochs with letters, and signs only bounded Params changes. Permissionless keepers promptly preserve event/pack entropy, settle batches, perform slippage-protected pool buys and finalize weeks. Team and bounty recipients pull their own ETH. There are no owner setters, upgrades, administrative token withdrawals, room keys, Generator or BurnVault.
 
-### Starter snapshot tooling
-
-Export the real collection's owners at the chosen Ethereum block into CSV columns `tokenId,holder`. Then run:
-
-```sh
-python3 tools/starter_merkle.py owners.csv --snapshot-block "$SNAPSHOT_BLOCK" --collection "$COLLECTION" > starter-proofs.json
-```
-
-This uses local `cast keccak`, not a network or private key. The leaf is exactly `keccak256(abi.encode(uint256 tokenId,address holder))`, with sorted pairs and an unpaired node carried upward. Publish the snapshot, collection identity, root, block, and proofs for review before immutable deployment. The snapshot collection identity is an operational attestation; the game verifies the root and does not bridge NFT ownership on demand.
-
-## After launch: operational responsibilities
-
-There is no post-launch owner configuration. Verify every constructor value before launch; mistakes cannot be repaired through an admin setter.
-
-- The **launch operator** verifies the token's plain-transfer behavior, immutable graph, external market/PoolManager, hook support and fee handling, recipient addresses, chosen liquidity, snapshot data, compiler/runtime hashes, and hook address flags. Deploying the token and initializing liquidity belong to the separate launch process.
-- The **swarm** publishes an event number during the first hour of each 12-hour tick and optionally a herald letter; only the future block hash chooses districts. It monitors pool inflow, tariffs and event fairness, and applies bounded parameter changes. A letter is informational, not executable configuration.
-- **Permissionless keepers / clients** resolve pack and event commits promptly (the future hash expires after 256 native L2 blocks), advance emission, settle/refresh stale farms, run small buyback batches at least ten minutes apart, and submit inspection candidates during the 24-hour window after each week. Finalize after that window. No operator key is needed for these actions.
-- Accounting is bounded: checkpoint 1–64 half-day segments and settle 1–64 daily segments per call. After long inactivity, use small `checkpoint` batches until caught up and then settle/refresh accounts. The max batch is a ceiling, not a recommended transaction size on every chain. Avoid assuming a large catch-up will fit one block.
-- Fee payees withdraw their own accrued ETH credits. Anyone may deliver accrued network fees to the immutable network recipient. Pool tokens and burn-vault tokens have no operator withdrawal path.
-
-Use a separate adversarial review before handling live funds. The tests and implementation-author review in this repository are not an independent audit.
+Operational availability still matters: epoch bounties reward shifting, while batch settlement requires keepers/players to submit transactions. Future block hashes are sequencer-influenced randomness; they are not a VRF. See the review and report for this limitation and the economic targets that the unfunded simulation does not meet.

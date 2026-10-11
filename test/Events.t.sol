@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
+import {BaseTest} from "./Base.t.sol";
+import {GridOperator} from "../src/GridOperator.sol";
+import "../src/lib/Errors.sol";
+
+contract EventsTest is BaseTest {
+    function testPlansOnlyNextTwoOnceAndBoundedSeverity() public {
+        vm.expectRevert(Unauthorized.selector);
+        d.grid.submitPlan(2, GridOperator.Kind.Outage, 10000, bytes32(uint256(9)), "bad authority");
+        vm.expectRevert(InvalidValue.selector);
+        vm.prank(swarm);
+        d.grid.submitPlan(1, GridOperator.Kind.Outage, 10000, bytes32(uint256(9)), "current");
+        vm.expectRevert(InvalidValue.selector);
+        vm.prank(swarm);
+        d.grid.submitPlan(4, GridOperator.Kind.Outage, 10000, bytes32(uint256(9)), "far");
+        vm.expectRevert(InvalidValue.selector);
+        vm.prank(swarm);
+        d.grid.submitPlan(2, GridOperator.Kind.Outage, 10001, bytes32(uint256(9)), "severity");
+        vm.prank(swarm);
+        d.grid.submitPlan(2, GridOperator.Kind.Outage, 10000, bytes32(uint256(9)), "valid");
+        vm.expectRevert(AlreadyDone.selector);
+        vm.prank(swarm);
+        d.grid.submitPlan(2, GridOperator.Kind.Calm, 10000, bytes32(uint256(8)), "overwrite");
+    }
+
+    function testFallbackAndExpiredSeedIndependentOfSwarmNumber() public {
+        vm.roll(vm.getBlockNumber() + 300);
+        d.grid.resolve(1);
+        (GridOperator.Kind k,,, bytes32 seed, bool resolved) = d.grid.eventAt(1);
+        assertTrue(resolved);
+        assertEq(uint256(k), uint256(d.grid.fallbackKind(1)));
+        assertEq(seed, keccak256(abi.encode(address(d.grid), uint256(1), "fixed fallback")));
+        vm.prank(swarm);
+        d.grid.submitPlan(2, GridOperator.Kind.Surge, 10000, keccak256("attacker grinding"), "expired plan");
+        vm.warp(d.rewards.epochEnd());
+        d.rewards.advanceEpoch();
+        finish();
+        vm.roll(vm.getBlockNumber() + 300);
+        d.grid.resolve(2);
+        (k,,, seed,) = d.grid.eventAt(2);
+        assertEq(uint256(k), uint256(d.grid.fallbackKind(2)));
+        assertEq(seed, keccak256(abi.encode(address(d.grid), uint256(2), "fixed fallback")));
+    }
+
+    function testRollingCapsAndInitialPositiveQuotaWithHostilePlans() public {
+        uint256[8] memory last;
+        for (uint256 i; i < 60; ++i) {
+            uint256 e = d.rewards.epoch();
+            entropy();
+            d.grid.resolve(e);
+            (GridOperator.Kind current,, uint8 district,,) = d.grid.eventAt(e);
+            if (current == GridOperator.Kind.Outage) {
+                uint256 start = d.rewards.epochStart();
+                if (last[district] != 0) assertGe(start, last[district] + 2 days);
+                last[district] = start;
+            }
+            if (e >= 20) {
+                uint256 positives;
+                uint256 negatives;
+                for (uint256 j = e - 19; j <= e; ++j) {
+                    (GridOperator.Kind k,,,,) = d.grid.eventAt(j);
+                    if (k == GridOperator.Kind.Green || k == GridOperator.Kind.Cheap) positives++;
+                    if (k == GridOperator.Kind.Outage) negatives++;
+                }
+                assertGe(positives, 4);
+                assertLe(negatives, 4);
+            }
+            vm.prank(swarm);
+            d.grid
+                .submitPlan(
+                    e + 1,
+                    i < 20 ? GridOperator.Kind.Calm : GridOperator.Kind.Outage,
+                    10000,
+                    bytes32(i + 1),
+                    "Quota adversary"
+                );
+            step();
+        }
+    }
+
+    function testLobbyOwnDistrictSplitDecayAndMinimumWeight() public {
+        vm.prank(alice);
+        d.farm.register(alice);
+        uint256 district = d.grid.district(alice);
+        uint256 before_ = d.grid.lobbyWeight(district);
+        vm.prank(alice);
+        d.grid.lobbyETH{value: 1 ether}();
+        assertLt(d.grid.lobbyWeight(district), before_);
+        assertEq(d.fees.credit(team), 0.13 ether);
+        assertEq(d.fees.heartbeatBalance(), 0.02 ether);
+        vm.warp(launch + 3 days);
+        assertEq(d.grid.lobbyAmount(district), 0.5 ether);
+        vm.warp(launch + 6 days);
+        assertEq(d.grid.lobbyAmount(district), 0.25 ether);
+        assertGe(d.grid.lobbyWeight(district), 4000);
+    }
+
+    function _force(GridOperator.Kind k, uint256 threshold, bool destroy) internal returns (bytes32 seed) {
+        for (uint256 i;; ++i) {
+            seed = bytes32(i + 1);
+            uint256 r = uint256(keccak256(abi.encode(seed, alice)));
+            if (r % 10000 < threshold && (!destroy || (r >> 128) % 100 < 2)) break;
+        }
+        vm.mockCall(
+            address(d.grid),
+            abi.encodeCall(d.grid.eventAt, (uint256(2))),
+            abi.encode(k, uint16(10000), uint8(d.farm.district(alice)), seed, true)
+        );
+    }
+
+    function testOutageAndOffgridRoomMitigation() public {
+        payPack(alice);
+        place(alice, 4, 0, 0);
+        place(alice, 5, 0, 1);
+        calmNext();
+        step();
+        _force(GridOperator.Kind.Outage, 3000, false);
+        vm.prank(address(d.rewards));
+        (uint256 raw, uint256 productive,) = d.farm.process(alice, 2);
+        assertEq(raw, 12000);
+        assertEq(productive, 6000);
+    }
+
+    function testSurgeDamagesExactlyOneItemAndCleanPowerImmune() public {
+        payPack(alice);
+        uint256 gpu = place(alice, 0, 0, 0);
+        calmNext();
+        step();
+        bytes32 seed = _force(GridOperator.Kind.Surge, 1000, false);
+        // Avoid the destruction branch for the durability test.
+        while ((uint256(keccak256(abi.encode(seed, alice))) >> 128) % 100 < 2) seed = bytes32(uint256(seed) + 1);
+        vm.mockCall(
+            address(d.grid),
+            abi.encodeCall(d.grid.eventAt, (uint256(2))),
+            abi.encode(GridOperator.Kind.Surge, uint16(10000), uint8(d.farm.district(alice)), seed, true)
+        );
+        vm.prank(address(d.rewards));
+        d.farm.process(alice, 2);
+        assertEq(d.items.data(gpu).durability, 4950);
+    }
+
+    function testSurgeCanDestroyCommonButNeverLegendary() public {
+        payPack(alice);
+        uint256 gpu = place(alice, 0, 0, 0);
+        calmNext();
+        step();
+        _force(GridOperator.Kind.Surge, 1000, true);
+        vm.prank(address(d.rewards));
+        d.farm.process(alice, 2);
+        assertEq(d.items.data(gpu).holder, address(0));
+        assertEq(d.farm.itemAt(alice, 0, 0), 0);
+    }
+
+    function testFireNoCoolingZeroYieldColdPowerImmune() public {
+        payPack(alice);
+        uint256 gpu = place(alice, 0, 0, 0);
+        calmNext();
+        step();
+        _force(GridOperator.Kind.Fire, 10000, false);
+        vm.prank(address(d.rewards));
+        (uint256 raw, uint256 productive,) = d.farm.process(alice, 2);
+        assertEq(raw, 10000);
+        assertEq(productive, 0);
+        assertEq(d.items.data(gpu).durability, 6950);
+    }
+
+    function testColdPowerFireImmuneAndCleanPowerSurgeImmune() public {
+        payPack(alice);
+        uint256 psu = place(alice, 3, 0, 0);
+        uint256 cooling = place(alice, 7, 0, 1);
+        uint256 surge = place(alice, 11, 0, 2);
+        calmNext();
+        step();
+        _force(GridOperator.Kind.Fire, 10000, false);
+        vm.prank(address(d.rewards));
+        (, uint256 productive,) = d.farm.process(alice, 2);
+        assertEq(productive, 18000);
+        assertEq(d.items.data(psu).durability, 9950);
+        assertEq(d.items.data(cooling).durability, 9950);
+        assertEq(d.items.data(surge).durability, 9950);
+    }
+
+    function testTheftRouterDisabledAndRepairRestores() public {
+        payPack(alice);
+        uint256 router = place(alice, 8, 0, 0);
+        calmNext();
+        step();
+        _force(GridOperator.Kind.Theft, 2000, false);
+        vm.prank(address(d.rewards));
+        (, uint256 productive,) = d.farm.process(alice, 2);
+        assertEq(productive, 0);
+        vm.prank(alice);
+        d.farm.repairCable(true);
+        assertGt(d.farm.roomStats(alice, 0).raw, 0);
+        assertEq(d.items.data(router).durability, 9950);
+    }
+
+    function testSurgeNeverDestroysLegendaryOrMythic() public {
+        uint256 price = d.packs.quote(112);
+        vm.prank(alice);
+        d.packs.openPack{value: price}(112);
+        uint256 legend = place(alice, 0, 3, 0);
+        uint256 mythic = place(alice, 1, 4, 1);
+        calmNext();
+        step();
+        _force(GridOperator.Kind.Surge, 1000, true);
+        vm.prank(address(d.rewards));
+        d.farm.process(alice, 2);
+        assertEq(d.items.data(legend).holder, alice);
+        assertEq(d.items.data(mythic).holder, alice);
+        assertEq(uint256(d.items.data(legend).durability) + d.items.data(mythic).durability, 14900);
+    }
+
+    function testCheapTariffAppliesCitywide() public {
+        fund(1_000_000 ether);
+        payPack(alice);
+        place(alice, 0, 0, 0);
+        calmNext();
+        step();
+        uint256 mining = d.pool.available() * 350 / 40000;
+        _force(GridOperator.Kind.Cheap, 10000, false);
+        step();
+        assertEq(d.rewards.pending(alice), mining - mining * 1500 / 10000 / 2);
+    }
+
+    function testGreenWaveRaisesDistrictMiningTenPercent() public {
+        fund(1_000_000 ether);
+        payPack(alice);
+        place(alice, 0, 0, 0);
+        calmNext();
+        step();
+        uint256 mining = d.pool.available() * 350 / 40000;
+        _force(GridOperator.Kind.Green, 10000, false);
+        step();
+        uint256 gross = mining * 11000 / 10000;
+        assertEq(d.rewards.pending(alice), gross - gross * 1500 / 10000);
+    }
+}

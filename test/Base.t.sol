@@ -4,8 +4,8 @@ import {Test} from "forge-std/Test.sol";
 import {Deploy} from "../script/Deploy.s.sol";
 import {MockToken} from "./mocks/MockToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
-import {ItemMath} from "../src/lib/ItemMath.sol";
 import {FarmCore} from "../src/FarmCore.sol";
+import {FarmItems} from "../src/FarmItems.sol";
 import {Params} from "../src/Params.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import "../src/lib/Errors.sol";
@@ -19,7 +19,6 @@ abstract contract BaseTest is Test {
     address internal bob;
     address internal swarm;
     address internal team;
-    address internal heartbeat;
     uint256 internal launch;
 
     function setUp() public virtual {
@@ -29,32 +28,28 @@ abstract contract BaseTest is Test {
         alice = makeAddr("alice");
         bob = makeAddr("bob");
         swarm = makeAddr("swarm");
-        team = makeAddr("team");
-        heartbeat = makeAddr("heartbeat");
+        team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
         token = new MockToken();
         market = new MockMarket(address(token));
         token.transfer(address(market), 100_000_000 ether);
-        Deploy.Config memory c = Deploy.Config(
-            address(token),
-            swarm,
-            heartbeat,
-            team,
-            address(market),
-            launch,
-            keccak256(abi.encode(uint256(17), alice)),
-            23_000_000
-        );
         address fixture = makeAddr("deployment script fixture");
         vm.etch(fixture, vm.getDeployedCode("Deploy.s.sol:Deploy"));
         deployment = Deploy(fixture);
-        d = deployment.deploy(c);
-        vm.deal(alice, 100 ether);
-        vm.deal(bob, 100 ether);
-        vm.deal(address(this), 100 ether);
+        d = deployment.deploy(
+            Deploy.Config(
+                address(token), swarm, address(market), launch, keccak256(abi.encode(uint256(17), alice)), 23_000_000
+            )
+        );
+        vm.deal(alice, 10000 ether);
+        vm.deal(bob, 10000 ether);
+        vm.deal(address(this), 10000 ether);
+        token.transfer(alice, 10_000_000 ether);
+        token.transfer(bob, 10_000_000 ether);
         vm.prank(alice);
-        d.items.setApprovalForAll(address(d.farm), true);
+        token.approve(address(d.farm), type(uint256).max);
         vm.prank(bob);
-        d.items.setApprovalForAll(address(d.farm), true);
+        token.approve(address(d.farm), type(uint256).max);
+        d.rewards.advanceEpoch();
     }
 
     function fund(uint256 amount) internal {
@@ -62,31 +57,49 @@ abstract contract BaseTest is Test {
         d.pool.donate(amount);
     }
 
-    // Test-only minter impersonation creates precise room fixtures; public mint authorization is tested separately.
-    function mintItem(address player, uint256 kind, uint256 rarity, uint256 epoch, bool starter)
-        internal
-        returns (uint256 id)
-    {
-        id = ItemMath.encode(kind, rarity, epoch, starter);
-        vm.prank(starter ? address(d.starter) : address(d.packs));
-        d.items.mint(player, id);
+    function mintItem(address p, uint8 k, uint8 r) internal returns (uint256 id) {
+        vm.prank(address(d.packs));
+        id = d.items.mint(p, k, r, false);
     }
 
-    function placeSolo(address player, uint256 kind, uint256 rarity, uint256 slot) internal returns (uint256 id) {
-        id = mintItem(player, kind, rarity, 0, false);
-        vm.prank(player);
-        d.farm.place(id, 4, slot);
+    function place(address p, uint8 k, uint8 r, uint256 slot) internal returns (uint256 id) {
+        id = mintItem(p, k, r);
+        vm.prank(p);
+        d.farm.place(id, 0, slot);
     }
 
-    function mine(address player, uint256 duration) internal {
-        vm.warp(vm.getBlockTimestamp() + duration);
-        d.rewards.settle(player, 64);
+    function payPack(address p) internal returns (uint256 id) {
+        uint256 price = d.packs.price();
+        vm.prank(p);
+        id = d.packs.openPack{value: price}(1);
     }
 
-    function resolvePack(uint256 id, bytes32 hash) internal {
-        (, uint64 target,,,,) = d.packs.commits(id);
-        vm.roll(uint256(target) + 1);
-        vm.setBlockhash(target, hash);
-        d.packs.resolve(id);
+    function entropy() internal {
+        uint256 n = vm.getBlockNumber();
+        vm.roll(n + 3);
+        vm.setBlockhash(n + 1, keccak256(abi.encode(n, "shift")));
+        vm.setBlockhash(n + 2, keccak256(abi.encode(n, "pack")));
+    }
+
+    function finish() internal {
+        while (!d.rewards.ready()) d.rewards.processEpoch(8);
+    }
+
+    function step() internal {
+        entropy();
+        vm.warp(d.rewards.epochEnd());
+        d.rewards.advanceEpoch();
+        finish();
+    }
+
+    function calmNext() internal {
+        uint256 e = d.rewards.epoch() + 1;
+        vm.prank(swarm);
+        d.grid.submitPlan(e, GridOperator.Kind.Calm, 10000, keccak256("test calm"), "Calm test epoch");
+    }
+
+    function resolvePack(uint256 id) internal {
+        entropy();
+        d.packs.resolve(id, 1);
     }
 }

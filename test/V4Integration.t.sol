@@ -52,11 +52,9 @@ contract V4IntegrationTest is BaseTest {
             address(d.params),
             address(hook),
             address(d.pool),
-            address(d.burn),
             address(d.packs),
             address(d.grid),
-            team,
-            heartbeat
+            address(d.rewards)
         );
         assertEq(address(router), predictedRouter);
         manager.initialize(hook.key(), uint160(1 << 96));
@@ -102,7 +100,7 @@ contract V4IntegrationTest is BaseTest {
         manager.unlock(abi.encode(uint8(1), uint256(1 ether)));
         assertEq(before - address(this).balance, 1 ether);
         assertEq(hook.networkCredit(), 0.0025 ether);
-        assertEq(router.credit(team), 0.002 ether);
+        assertEq(router.credit(team), 0.01 ether);
         uint256 oldCredit = hook.networkCredit();
         uint256 oldPrice = hook.lastPrice();
         manager.unlock(abi.encode(uint8(2), uint256(100 ether)));
@@ -117,9 +115,9 @@ contract V4IntegrationTest is BaseTest {
     function testRealV4SystemBuyUsesTwapAndOnlySystemFunds() public {
         router.depositBaseFee{value: 1 ether}();
         uint256 beforePool = token.balanceOf(address(d.pool));
-        uint256 quoted = hook.quote(0.1 ether);
-        router.executeBuys(false, 0.1 ether, quoted * 98 / 100);
-        assertGe(token.balanceOf(address(d.pool)) - beforePool, quoted * 98 / 100);
+        uint256 quoted = hook.quote(0.5 ether);
+        router.executeBuys(0.5 ether, quoted * 97 / 100);
+        assertGe(token.balanceOf(address(d.pool)) - beforePool, quoted * 97 / 100);
         (uint256 hour, uint256 day) = hook.imbalances();
         assertEq(hour, 0);
         assertEq(day, 0);

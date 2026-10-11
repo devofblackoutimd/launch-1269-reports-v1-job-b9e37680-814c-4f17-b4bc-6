@@ -1,131 +1,127 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Params} from "./Params.sol";
-import {IEmission, IMarket} from "./interfaces/Interfaces.sol";
+import {IMarket} from "./interfaces/Interfaces.sol";
 import "./lib/Errors.sol";
 
-/// @notice ETH splits are immutable. There is no pool withdrawal or arbitrary-call facility.
 contract FeeRouter is ReentrancyGuard {
-    using SafeERC20 for IERC20;
+    address public constant team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
+    uint256 public constant HEARTBEAT_CAP = 1 ether;
     IERC20 public immutable token;
     Params public immutable params;
     IMarket public immutable market;
     address public immutable rewardPool;
-    address public immutable burnVault;
     address public immutable packSale;
     address public immutable grid;
-    address public immutable heartbeatRecipient;
-    address public team;
+    address public immutable rewards;
     uint256 public rewardETH;
-    uint256 public burnETH;
+    uint256 public heartbeatBalance;
     uint256 public lastBuy;
     mapping(address => uint256) public credit;
     event Routed(uint8 indexed stream, uint256 amount);
-    event Bought(bool indexed burn, uint256 ethAmount, uint256 tokenAmount);
+    event Bought(uint256 ethAmount, uint256 tokenAmount);
     event Withdrawn(address indexed recipient, uint256 amount);
-    event TeamChanged(address indexed oldTeam, address indexed newTeam);
+    event Bounty(address indexed caller, uint256 amount);
 
     constructor(
         address token_,
         address params_,
         address market_,
         address pool_,
-        address burn_,
         address packs_,
         address grid_,
-        address team_,
-        address heartbeat_
+        address rewards_
     ) {
         if (
             token_ == address(0) || params_ == address(0) || market_ == address(0) || pool_ == address(0)
-                || burn_ == address(0) || packs_ == address(0) || grid_ == address(0) || team_ == address(0)
-                || heartbeat_ == address(0)
+                || packs_ == address(0) || grid_ == address(0) || rewards_ == address(0)
         ) revert InvalidAddress();
         token = IERC20(token_);
         params = Params(params_);
         market = IMarket(market_);
         rewardPool = pool_;
-        burnVault = burn_;
         packSale = packs_;
         grid = grid_;
-        team = team_;
-        heartbeatRecipient = heartbeat_;
+        rewards = rewards_;
     }
 
     receive() external payable {
-        _route(1, 3000, 4000, 2000);
+        _base();
+    }
+
+    function depositBaseFee() external payable {
+        _base();
+    }
+
+    function _base() private {
+        if (msg.value == 0) revert InvalidValue();
+        uint256 t = msg.value / 2;
+        credit[team] += t;
+        rewardETH += msg.value - t;
+        emit Routed(0, msg.value);
     }
 
     function depositPack() external payable {
         if (msg.sender != packSale) revert Unauthorized();
-        _route(0, 6500, 1000, 1500);
-    }
-
-    function depositBaseFee() external payable {
-        _route(1, 3000, 4000, 2000);
-    }
-
-    function depositSellTax() external payable {
-        _route(2, 4000, 3500, 1500);
+        _route(1);
     }
 
     function depositLobby() external payable {
         if (msg.sender != grid) revert Unauthorized();
-        _route(3, 0, 8500, 1000);
+        _route(2);
     }
 
-    function _route(uint8 stream, uint256 rewardBps, uint256 burnBps, uint256 teamBps) private {
+    function depositSellTax() external payable {
+        if (msg.sender != address(market)) revert Unauthorized();
+        _route(3);
+    }
+
+    function _route(uint8 stream) private {
         if (msg.value == 0) revert InvalidValue();
-        uint256 r = msg.value * rewardBps / 10000;
-        uint256 b = msg.value * burnBps / 10000;
-        uint256 t = msg.value * teamBps / 10000;
-        rewardETH += r;
-        burnETH += b;
+        uint256 t = msg.value * 1300 / 10000;
+        uint256 h = msg.value * 200 / 10000;
+        uint256 room = HEARTBEAT_CAP - heartbeatBalance;
+        if (h > room) h = room;
         credit[team] += t;
-        credit[heartbeatRecipient] += msg.value - r - b - t;
+        heartbeatBalance += h;
+        rewardETH += msg.value - t - h;
         emit Routed(stream, msg.value);
     }
 
-    function changeTeam(address next) external {
-        if (msg.sender != team) revert Unauthorized();
-        if (next == address(0) || next == address(this)) revert InvalidAddress();
-        emit TeamChanged(team, next);
-        team = next;
+    function payBounty(address caller) external {
+        if (msg.sender != rewards) revert Unauthorized();
+        uint256 b = params.get(Params.Key.Bounty);
+        if (b > heartbeatBalance) b = heartbeatBalance;
+        heartbeatBalance -= b;
+        credit[caller] += b;
+        emit Bounty(caller, b);
     }
 
     function withdraw() external nonReentrant {
-        uint256 amount = credit[msg.sender];
-        if (amount == 0) revert InsufficientBalance();
+        uint256 a = credit[msg.sender];
+        if (a == 0) revert InsufficientBalance();
         credit[msg.sender] = 0;
-        (bool ok,) = msg.sender.call{value: amount}("");
+        (bool ok,) = msg.sender.call{value: a}("");
         if (!ok) revert TransferFailed();
-        emit Withdrawn(msg.sender, amount);
+        emit Withdrawn(msg.sender, a);
     }
 
-    function executeBuys(bool burn, uint256 ethAmount, uint256 minOut)
-        external
-        nonReentrant
-        returns (uint256 received)
-    {
-        if (ethAmount == 0 || ethAmount > params.get(Params.Key.BuyBatch)) {
+    function executeBuys(uint256 ethAmount, uint256 minOut) external nonReentrant returns (uint256 received) {
+        if (ethAmount == 0 || ethAmount > params.get(Params.Key.BuyBatch) || ethAmount > rewardETH) {
             revert InvalidValue();
         }
-        if (lastBuy != 0 && block.timestamp < lastBuy + 10 minutes) revert TooEarly();
-        uint256 quote = market.quote(ethAmount);
-        if (quote == 0 || minOut < quote * (10000 - params.get(Params.Key.SlippageBps)) / 10000) revert InvalidValue();
-        if (burn) burnETH -= ethAmount;
-        else rewardETH -= ethAmount;
+        uint256 q = market.quote(ethAmount);
+        if (q == 0 || minOut == 0 || minOut < q * (10000 - params.get(Params.Key.SlippageBps)) / 10000) {
+            revert InvalidValue();
+        }
+        rewardETH -= ethAmount;
         lastBuy = block.timestamp;
-        address recipient = burn ? burnVault : rewardPool;
-        // Checkpoint before a new donation can affect a previous interval.
-        if (!params.emission().checkpoint(64)) revert CatchUpRequired();
-        uint256 beforeBalance = token.balanceOf(recipient);
-        market.buy{value: ethAmount}(minOut, recipient);
-        received = token.balanceOf(recipient) - beforeBalance;
+        uint256 before_ = token.balanceOf(rewardPool);
+        market.buy{value: ethAmount}(minOut, rewardPool);
+        received = token.balanceOf(rewardPool) - before_;
         if (received < minOut) revert InsufficientBalance();
-        emit Bought(burn, ethAmount, received);
+        emit Bought(ethAmount, received);
     }
 }

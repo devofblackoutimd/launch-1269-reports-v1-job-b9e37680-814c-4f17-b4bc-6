@@ -4,489 +4,364 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Params} from "./Params.sol";
 import {RewardPool} from "./RewardPool.sol";
-import {IGrid, IFarm} from "./interfaces/Interfaces.sol";
+import {FeeRouter} from "./FeeRouter.sol";
+import {GridOperator} from "./GridOperator.sol";
+import {ICore, ISeason} from "./interfaces/IGame.sol";
 import "./lib/Errors.sol";
 
-/// @notice Bounded checkpointing and daily reward vintages; pool liabilities are reserved before credit.
+/// @notice Epoch transitions do O(1) work. Anyone settles a closed roster in batches of at most eight.
 contract FarmRewards is ReentrancyGuard {
-    using Math for uint256;
-    uint256 public constant ACC = 1e27;
-    uint256 public constant TICK = 12 hours;
-    uint256 public immutable launchTime;
-    Params public immutable params;
-    RewardPool public immutable pool;
-    address public immutable core;
-    address public immutable burnVault;
-    IGrid public immutable grid;
-    uint256 public lastCheckpoint;
-    uint256 public totalHash;
-    uint256[128] public bucketHash;
-    uint256[128] public acc;
-    uint256[128] public miningAcc;
-    uint256 public powerAcc;
-    mapping(uint256 => mapping(uint256 => uint256)) public dayAcc;
-    mapping(uint256 => mapping(uint256 => uint256)) public dayMiningAcc;
-    mapping(uint256 => uint256) public dayPower;
-    uint256 public rpsEMA;
-    uint256 public dayEmission;
-    uint256 private tickPoolBudget;
-    uint256 private tickPoolCap;
-    uint256 private tickPoolUsed;
-    uint256 private tickRedisBudget;
-    uint256 private tickRedisUsed;
-    bool private tickReady;
-    uint256 public redistribution;
-    uint256 private tickInspectionBps;
+    uint256 public constant EPOCH = 6 hours;
 
-    struct Allocation {
-        uint256 dt;
-        uint256 tick;
-        uint256 week;
-        uint256 weighted;
-        uint256 fresh;
-        uint256 reused;
+    struct Epoch {
+        uint64 start;
+        uint64 end;
+        uint64 roster;
+        uint8 phase;
+        uint256 cursor;
+        uint256 raw;
+        uint256 budget;
         uint256 mining;
-        uint256 gross;
-        uint256 referral;
-        uint256 prize;
-        uint256 auditBurn;
-        uint256 miningAuditBurn;
+        uint256 redis;
+        uint256 spent;
+        uint256 sales;
+        uint256 target;
+        uint256 tariff;
+        uint256 emission;
+        uint256 audited;
+        uint256 lastActive;
+        uint256 redisPaid;
+    }
+
+    struct Share {
+        uint256 raw;
+        uint256 productive;
+        uint256 power;
+        bool audit;
     }
 
     struct Vintage {
-        uint64 day;
-        uint192 amount;
+        uint64 epoch;
+        uint64 at;
+        uint256 amount;
     }
 
     struct Account {
-        uint8[5] buckets;
-        uint256[5] hashes;
-        uint256[5] debts;
-        uint256[5] miningDebts;
-        uint256 powerHash;
-        uint256 powerDebt;
-        uint256 cursor;
-        uint256 durability;
-        uint256 maintainedAt;
-        uint256 upkeepDebt;
-        uint256 powerCredit;
-        uint256 matured;
         uint256 pending;
-        Vintage[16] vintages;
+        uint256 matured;
         address referrer;
         bool referralClosed;
+        Vintage[32] vintages;
     }
+    Params public immutable params;
+    RewardPool public immutable pool;
+    ICore public immutable core;
+    GridOperator public immutable grid;
+    FeeRouter public immutable fees;
+    ISeason public immutable season;
+    uint256 public immutable launchTime;
+    uint256 public epoch;
+    uint256 public settledEpoch;
+    uint256 public queuedTax;
+    uint256 public currentRedis;
+    uint256 public lastYieldPerHash;
+    uint256 public scrapAllowance;
+    mapping(uint256 => Epoch) public epochs;
+    mapping(uint256 => mapping(uint256 => uint256)) public epochParam;
+    mapping(uint256 => mapping(address => Share)) public shares;
+    mapping(uint256 => uint256[]) private heaps;
     mapping(address => Account) private accounts;
-    mapping(uint256 => uint256) public weekEmission;
-    mapping(uint256 => uint256) public inspectionMinHashInWeek;
-    mapping(uint256 => uint256) public weekPrize;
-    mapping(address => mapping(uint256 => uint256)) public grossInWeek;
-    mapping(address => mapping(uint256 => uint256)) public burnInWeek;
-    mapping(address => mapping(uint256 => bool)) public eligibleInWeek;
-    mapping(uint256 => address) public inspectionWinner;
-    mapping(uint256 => uint256) public inspectionScore;
-    mapping(uint256 => bool) public inspectionPaid;
-    event Emission(uint256 indexed tick, uint256 gross, uint256 reserve);
-    event Settled(address indexed player, uint256 gross, uint256 burned, uint256 net, uint256 day);
+    event EpochStarted(uint256 indexed epoch, uint256 start, uint256 end, address caller);
+    event EpochClosed(uint256 indexed epoch, uint256 budget, uint256 roster);
+    event EpochSettled(uint256 indexed epoch, uint256 mining, uint256 recycled);
+    event Credited(address indexed player, uint256 indexed epoch, uint256 amount);
     event Claimed(address indexed player, uint256 amount, uint256 tax);
-    event Spent(address indexed player, uint256 consumed, uint256 burned);
+    event Spent(address indexed player, uint256 consumed);
     event ReferrerSet(address indexed player, address indexed referrer);
-    event InspectionCandidate(uint256 indexed week, address indexed player, uint256 score);
-    event InspectionPaid(uint256 indexed week, address indexed winner, uint256 amount);
 
-    constructor(address params_, address pool_, address core_, address burn_, address grid_, uint256 launch_) {
+    constructor(
+        address params_,
+        address pool_,
+        address core_,
+        address grid_,
+        address fees_,
+        address season_,
+        uint256 launch_
+    ) {
         if (
-            params_ == address(0) || pool_ == address(0) || core_ == address(0) || burn_ == address(0)
-                || grid_ == address(0) || launch_ == 0
+            params_ == address(0) || pool_ == address(0) || core_ == address(0) || grid_ == address(0)
+                || fees_ == address(0) || season_ == address(0) || launch_ == 0
         ) revert InvalidValue();
         params = Params(params_);
         pool = RewardPool(pool_);
-        core = core_;
-        burnVault = burn_;
-        grid = IGrid(grid_);
+        core = ICore(core_);
+        grid = GridOperator(grid_);
+        fees = FeeRouter(payable(fees_));
+        season = ISeason(season_);
         launchTime = launch_;
-        lastCheckpoint = launch_;
     }
     modifier onlyCore() {
-        if (msg.sender != core) revert Unauthorized();
+        if (msg.sender != address(core)) revert Unauthorized();
         _;
     }
 
-    function checkpoint(uint256 maxTicks) external nonReentrant returns (bool) {
-        return _checkpoint(maxTicks);
+    function ready() public view returns (bool) {
+        return epoch == 0 || settledEpoch + 1 == epoch;
     }
 
-    function _checkpoint(uint256 maxTicks) private returns (bool) {
-        if (maxTicks == 0 || maxTicks > 64) revert InvalidValue();
-        if (block.timestamp <= lastCheckpoint) return true;
-        for (uint256 step; step < maxTicks && lastCheckpoint < block.timestamp; ++step) {
-            uint256 tick = (lastCheckpoint - launchTime) / TICK;
-            uint256 week = (lastCheckpoint - launchTime) / 7 days;
-            if (inspectionMinHashInWeek[week] == 0) {
-                inspectionMinHashInWeek[week] = params.get(Params.Key.InspectionMinHash);
-            }
-            uint256 end = launchTime + (tick + 1) * TICK;
-            if (end > block.timestamp) end = block.timestamp;
-            if (!tickReady) {
-                uint256 available = pool.available();
-                tickInspectionBps = params.get(Params.Key.InspectionBps);
-                uint256 wanted =
-                    available * params.get(Params.Key.EmissionBps) * (10500 + tickInspectionBps) / 200_000_000;
-                tickPoolCap = available * 500 / 20000;
-                tickPoolUsed = 0;
-                tickPoolBudget = Math.min(wanted, tickPoolCap);
-                tickRedisBudget = redistribution;
-                redistribution = 0;
-                tickRedisUsed = 0;
-                // An empty launch pool must begin earning once its first buyback arrives.
-                tickReady = tickPoolBudget != 0 || tickRedisBudget != 0;
-            }
-            uint256 dt = end - lastCheckpoint;
-            uint256 weighted;
-            for (uint256 b; b < 128; ++b) {
-                if (bucketHash[b] != 0) weighted += bucketHash[b] * grid.weight(b, lastCheckpoint) / 10000;
-            }
-            if (weighted != 0) {
-                Allocation memory a;
-                a.dt = dt;
-                a.tick = tick;
-                a.week = week;
-                a.weighted = weighted;
-                _accrue(a);
-            }
-            lastCheckpoint = end;
-            if (end == launchTime + (tick + 1) * TICK) {
-                if (tickRedisBudget > tickRedisUsed) redistribution += tickRedisBudget - tickRedisUsed;
-                tickReady = false;
-                if ((tick + 1) % 2 == 0) {
-                    uint256 day = tick / 2;
-                    for (uint256 b; b < 128; ++b) {
-                        dayAcc[day][b] = acc[b];
-                        dayMiningAcc[day][b] = miningAcc[b];
-                    }
-                    dayPower[day] = powerAcc;
-                    if (totalHash != 0) rpsEMA = rpsEMA * 7 / 10 + Math.mulDiv(dayEmission, 1e18, totalHash) * 3 / 10;
-                    dayEmission = 0;
-                }
-            }
-        }
-        return lastCheckpoint >= block.timestamp;
+    function live() public view returns (bool) {
+        return epoch != 0 && block.timestamp < epochs[epoch].end;
     }
 
-    function _accrue(Allocation memory a) private {
-        a.fresh = Math.min(
-            tickPoolCap - tickPoolUsed, tickPoolBudget * a.dt * grid.emissionBps(lastCheckpoint) / (TICK * 10000)
-        );
-        tickPoolUsed += a.fresh;
-        a.reused = tickRedisBudget * a.dt / TICK;
-        tickRedisUsed += a.reused;
-        a.mining = a.fresh * 10000 / (10500 + tickInspectionBps);
-        a.gross = a.mining + a.reused;
-        a.referral = a.mining * 500 / 10000;
-        a.prize = a.mining * tickInspectionBps / 10000;
-        pool.reserve(a.fresh);
-        if (a.fresh + a.reused > a.gross + a.referral + a.prize) {
-            pool.recycle(a.fresh + a.reused - a.gross - a.referral - a.prize);
-        }
-        _distribute(a);
-        if (rpsEMA == 0) rpsEMA = Math.mulDiv(a.gross, 1 days * 1e18, a.dt * totalHash);
-        weekPrize[a.week] += a.prize;
-        weekEmission[a.week] += a.mining;
-        dayEmission += a.gross;
-        powerAcc += Math.mulDiv(rpsEMA * 1e9, a.dt * params.get(Params.Key.TariffBps), 1 days * 10000);
-        emit Emission(a.tick, a.gross, a.gross + a.referral + a.prize);
+    function epochStart() external view returns (uint256) {
+        return epochs[epoch].start;
     }
 
-    function _distribute(Allocation memory a) private {
-        for (uint256 b; b < 128; ++b) {
-            if (bucketHash[b] != 0) {
-                uint256 weight_ = bucketHash[b] * grid.weight(b, lastCheckpoint);
-                uint256 share = Math.mulDiv(a.gross, weight_, a.weighted * 10000);
-                uint256 miningShare = Math.mulDiv(a.mining, weight_, a.weighted * 10000);
-                uint256 penalty = 10000 - grid.rewardBps(b, lastCheckpoint);
-                uint256 loss = share * penalty / 10000;
-                uint256 miningLoss = miningShare * penalty / 10000;
-                a.miningAuditBurn += miningLoss;
-                a.auditBurn += loss;
-                acc[b] += Math.mulDiv(share - loss, ACC, bucketHash[b]);
-                miningAcc[b] += Math.mulDiv(miningShare - miningLoss, ACC, bucketHash[b]);
-            }
+    function epochEnd() external view returns (uint256) {
+        return epochs[epoch].end;
+    }
+
+    function advanceEpoch() external nonReentrant {
+        if (block.timestamp < launchTime || !ready() || (epoch != 0 && block.timestamp < epochs[epoch].end)) {
+            revert TooEarly();
         }
-        if (a.auditBurn != 0) {
-            pool.pay(burnVault, a.auditBurn);
-            pool.recycle(a.miningAuditBurn * 500 / 10000);
+        if (epoch != 0) {
+            grid.resolve(epoch);
+            Epoch storage old = epochs[epoch];
+            old.roster = uint64(core.count());
+            old.phase = 1;
+            old.mining = pool.available() * old.emission / 40000;
+            old.budget = old.mining * 116 / 100;
+            old.redis = currentRedis;
+            pool.reserve(old.budget);
+            emit EpochClosed(epoch, old.budget, old.roster);
+        }
+        epoch++;
+        Epoch storage e = epochs[epoch];
+        e.start = uint64(block.timestamp);
+        e.end = uint64(block.timestamp + EPOCH);
+        e.target = params.get(Params.Key.DemandTarget) * 6;
+        e.tariff = params.get(Params.Key.TariffBps);
+        e.emission = params.get(Params.Key.EmissionBps);
+        for (uint256 k = uint256(Params.Key.FullSetBps); k <= uint256(Params.Key.SetCapBps); ++k) {
+            epochParam[epoch][k] = params.get(Params.Key(k));
+        }
+        currentRedis = queuedTax;
+        queuedTax = 0;
+        grid.shift(epoch);
+        fees.payBounty(msg.sender);
+        emit EpochStarted(epoch, e.start, e.end, msg.sender);
+    }
+
+    function recordSales(uint256 n) external onlyCore {
+        if (!live()) revert TooEarly();
+        epochs[epoch].sales += n;
+    }
+
+    function _greater(uint256 e, uint256 a, uint256 b) private view returns (bool) {
+        uint256 x = shares[e][core.playerAt(a)].raw;
+        uint256 y = shares[e][core.playerAt(b)].raw;
+        return x > y || (x == y && a < b);
+    }
+
+    function _push(uint256 e, uint256 id) private {
+        uint256[] storage h = heaps[e];
+        h.push(id);
+        uint256 i = h.length - 1;
+        while (i != 0) {
+            uint256 p = (i - 1) / 2;
+            if (!_greater(e, h[i], h[p])) break;
+            (h[i], h[p]) = (h[p], h[i]);
+            i = p;
         }
     }
 
-    function settle(address player, uint256 maxDays) external nonReentrant returns (bool) {
-        _checkpoint(64);
-        return _settle(player, maxDays);
-    }
-
-    function _durability(Account storage a, uint256 at) private view returns (uint256) {
-        if (at <= a.maintainedAt || a.hashes[0] + a.hashes[1] + a.hashes[2] + a.hashes[3] + a.hashes[4] == 0) {
-            return a.durability;
-        }
-        uint256 loss = (at - a.maintainedAt) * 2 ether / 1 days;
-        return loss >= a.durability ? 0 : a.durability - loss;
-    }
-
-    function initialized(address player) external view returns (bool) {
-        return accounts[player].cursor != 0;
-    }
-
-    function durability(address player) external view returns (uint256) {
-        return _durability(accounts[player], block.timestamp);
-    }
-
-    function pending(address player) external view returns (uint256) {
-        return accounts[player].pending;
-    }
-
-    function upkeepDebt(address player) external view returns (uint256) {
-        return accounts[player].upkeepDebt;
-    }
-
-    function referrer(address player) external view returns (address) {
-        return accounts[player].referrer;
-    }
-
-    function accountHash(address player) public view returns (uint256 h) {
-        for (uint256 i; i < 5; ++i) {
-            h += accounts[player].hashes[i];
+    function _pop(uint256 e) private returns (uint256 id) {
+        uint256[] storage h = heaps[e];
+        id = h[0];
+        h[0] = h[h.length - 1];
+        h.pop();
+        uint256 i;
+        while (i * 2 + 1 < h.length) {
+            uint256 j = i * 2 + 1;
+            if (j + 1 < h.length && _greater(e, h[j + 1], h[j])) j++;
+            if (!_greater(e, h[j], h[i])) break;
+            (h[i], h[j]) = (h[j], h[i]);
+            i = j;
         }
     }
 
-    function _settle(address player, uint256 maxDays) private returns (bool) {
-        if (maxDays == 0 || maxDays > 64) revert InvalidValue();
-        Account storage a = accounts[player];
-        if (a.cursor == 0) return true;
-        for (uint256 j; j < maxDays && a.cursor < lastCheckpoint; ++j) {
-            uint256 day = (a.cursor - launchTime) / 1 days;
-            uint256 dayEnd = launchTime + (day + 1) * 1 days;
-            uint256 end = Math.min(dayEnd, lastCheckpoint);
-            bool closed = end == dayEnd;
-            uint256 gross;
-            uint256 mining;
-            for (uint256 i; i < 5; ++i) {
-                uint256 index = closed ? dayAcc[day][a.buckets[i]] : acc[a.buckets[i]];
-                gross += Math.mulDiv(a.hashes[i], index - a.debts[i], ACC);
-                a.debts[i] = index;
-                uint256 miningIndex = closed ? dayMiningAcc[day][a.buckets[i]] : miningAcc[a.buckets[i]];
-                mining += Math.mulDiv(a.hashes[i], miningIndex - a.miningDebts[i], ACC);
-                a.miningDebts[i] = miningIndex;
+    /// @dev Three phases: measure, select top decile (audit only), credit. No caller supplies allocation data.
+    function processEpoch(uint256 limit) external nonReentrant {
+        if (limit == 0 || limit > 8 || epoch < 2 || ready()) revert InvalidValue();
+        uint256 id = epoch - 1;
+        Epoch storage e = epochs[id];
+        (GridOperator.Kind kind, uint16 severity,, bytes32 seed,) = grid.eventAt(id);
+        if (e.phase == 1) {
+            for (uint256 n; n < limit && e.cursor < e.roster; ++n) {
+                address p = core.playerAt(e.cursor);
+                (uint256 raw, uint256 productive, uint256 power) = core.process(p, id);
+                shares[id][p] = Share(raw, productive, power, false);
+                e.raw += raw;
+                if (raw != 0) e.lastActive = e.cursor;
+                if (raw != 0 && kind == GridOperator.Kind.Audit) _push(id, e.cursor);
+                e.cursor++;
             }
-            uint256 costIndex = closed ? dayPower[day] : powerAcc;
-            uint256 power = Math.mulDiv(a.powerHash, costIndex - a.powerDebt, ACC);
-            a.powerDebt = costIndex;
-            uint256 prepaid = Math.min(power, a.powerCredit);
-            a.powerCredit -= prepaid;
-            power -= prepaid;
-            uint256 average = (_durability(a, a.cursor) + _durability(a, end)) / 2;
-            // The zero crossing uses exact area under linear durability, not endpoint averaging.
-            uint256 startDur = _durability(a, a.cursor);
-            if (startDur != 0 && _durability(a, end) == 0) {
-                uint256 activeSeconds = startDur * 1 days / 2 ether;
-                average = Math.mulDiv(startDur, activeSeconds, 2 * (end - a.cursor));
+            if (e.cursor == e.roster) {
+                e.cursor = 0;
+                e.phase = kind == GridOperator.Kind.Audit ? 2 : 3;
+                e.audited = (heaps[id].length + 9) / 10;
             }
-            uint256 credited = Math.mulDiv(gross, average, 100 ether);
-            uint256 burn = Math.min(credited, power + a.upkeepDebt);
-            a.upkeepDebt = power + a.upkeepDebt - burn;
-            uint256 net = credited - burn;
-            uint256 referral = mining * 500 / 10000;
-            uint256 earnedReferral = Math.mulDiv(mining, average, 100 ether) * 500 / 10000;
-            if (a.referrer == address(0)) earnedReferral = 0;
-            if (earnedReferral != 0) _credit(a.referrer, earnedReferral, day);
-            uint256 recycle = gross - credited + referral - earnedReferral;
-            if (recycle != 0) pool.recycle(recycle);
-            if (burn != 0) pool.pay(burnVault, burn);
-            if (net != 0) _credit(player, net, day);
-            uint256 week = day / 7;
-            grossInWeek[player][week] += credited;
-            burnInWeek[player][week] += burn;
-            if (accountHash(player) >= inspectionMinHashInWeek[week]) eligibleInWeek[player][week] = true;
-            if (gross != 0) a.referralClosed = true;
-            a.cursor = end;
-            emit Settled(player, gross, burn, net, day);
-        }
-        return a.cursor >= lastCheckpoint;
-    }
-
-    function setReferrer(address player, address inviter) external onlyCore {
-        Account storage a = accounts[player];
-        if (a.referralClosed || a.referrer != address(0)) revert AlreadyDone();
-        if (inviter == player || !IFarm(core).hasFarm(inviter)) revert InvalidValue();
-        a.referrer = inviter;
-        emit ReferrerSet(player, inviter);
-    }
-
-    function update(address player, uint8[5] calldata buckets, uint256[5] calldata hashes, uint256 powerHash)
-        external
-        onlyCore
-        nonReentrant
-    {
-        if (!_checkpoint(64) || !_settle(player, 64)) revert CatchUpRequired();
-        Account storage a = accounts[player];
-        if (a.cursor == 0) {
-            a.durability = 100 ether;
-            a.maintainedAt = Math.max(block.timestamp, launchTime);
+        } else if (e.phase == 2) {
+            for (uint256 n; n < limit && e.cursor < e.audited; ++n) {
+                shares[id][core.playerAt(_pop(id))].audit = true;
+                e.cursor++;
+            }
+            if (e.cursor == e.audited) {
+                e.cursor = 0;
+                e.phase = 3;
+            }
         } else {
-            a.durability = _durability(a, block.timestamp);
-            a.maintainedAt = block.timestamp;
+            for (uint256 n; n < limit && e.cursor < e.roster; ++n) {
+                address p = core.playerAt(e.cursor++);
+                Share storage s = shares[id][p];
+                if (s.raw == 0) continue;
+                uint256 gross = Math.mulDiv(e.mining, s.productive, e.raw);
+                uint256 electricity = Math.mulDiv(e.mining, s.power, e.raw) * e.tariff / 10000;
+                if (kind == GridOperator.Kind.Cheap) electricity /= 2;
+                uint256 audit = s.audit ? gross * 1000 * severity / 100_000_000 : 0;
+                uint256 net = gross - audit - Math.min(electricity, gross - audit);
+                uint256 redis =
+                    e.cursor - 1 == e.lastActive ? e.redis - e.redisPaid : Math.mulDiv(e.redis, s.raw, e.raw);
+                e.redisPaid += redis;
+                uint256 referral;
+                Account storage a = accounts[p];
+                a.referralClosed = true;
+                if (a.referrer != address(0)) {
+                    referral = gross * 500 / 10000;
+                    _credit(a.referrer, referral, id, e.end);
+                }
+                _credit(p, net + redis, id, e.end);
+                e.spent += net + redis + referral;
+                core.activity(p, id, gross, net);
+                if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(seed, p, "supply"))) % 10000 < 500) {
+                    core.grantDrop(p, keccak256(abi.encode(seed, p, "item")));
+                }
+                season.recordActivity(p, (e.start - launchTime) / 7 days, gross);
+            }
+            if (e.cursor == e.roster) {
+                uint256 prize = e.raw == 0 ? 0 : e.mining / 100;
+                e.spent += prize;
+                if (prize != 0) season.addPrize((e.start - launchTime) / 7 days, prize);
+                uint256 recycle = e.budget + e.redis - e.spent;
+                if (e.raw == 0) {
+                    queuedTax += e.redis;
+                    recycle -= e.redis;
+                }
+                uint256 freshUnused = e.budget > e.spent ? e.budget - e.spent : 0;
+                uint256 allowance = e.raw == 0 ? 0 : Math.min(e.mining / 6, freshUnused);
+                if (scrapAllowance != 0) pool.recycle(scrapAllowance);
+                scrapAllowance = allowance;
+                recycle -= allowance;
+                if (recycle != 0) pool.recycle(recycle);
+                lastYieldPerHash = e.raw == 0 ? 0 : Math.mulDiv(e.mining, 1 ether, e.raw);
+                e.phase = 4;
+                settledEpoch = id;
+                emit EpochSettled(id, e.mining, recycle);
+            }
         }
-        for (uint256 i; i < 5; ++i) {
-            bucketHash[a.buckets[i]] -= a.hashes[i];
-            totalHash -= a.hashes[i];
-            if (buckets[i] >= 128) revert InvalidValue();
-            a.buckets[i] = buckets[i];
-            a.hashes[i] = hashes[i];
-            a.debts[i] = acc[buckets[i]];
-            a.miningDebts[i] = miningAcc[buckets[i]];
-            bucketHash[buckets[i]] += hashes[i];
-            totalHash += hashes[i];
-        }
-        a.powerHash = powerHash;
-        a.powerDebt = powerAcc;
-        a.cursor = Math.max(block.timestamp, launchTime);
-        if (hashes[0] + hashes[1] + hashes[2] + hashes[3] + hashes[4] != 0) a.referralClosed = true;
     }
 
-    function _credit(address player, uint256 amount, uint256 day) private {
-        if (amount > type(uint192).max) revert InvalidValue();
-        Account storage a = accounts[player];
+    function pending(address p) external view returns (uint256) {
+        return accounts[p].pending;
+    }
+
+    function referrer(address p) external view returns (address) {
+        return accounts[p].referrer;
+    }
+
+    function setReferrer(address p, address ref) external onlyCore {
+        Account storage a = accounts[p];
+        if (a.referrer != address(0) || a.referralClosed) revert AlreadyDone();
+        if (p == ref || !core.hasFarm(ref)) revert InvalidValue();
+        a.referrer = ref;
+        emit ReferrerSet(p, ref);
+    }
+
+    function _credit(address p, uint256 amount, uint256 e, uint256 at) private {
+        if (amount == 0) return;
+        Account storage a = accounts[p];
         a.pending += amount;
-        uint256 current = block.timestamp < launchTime ? 0 : (block.timestamp - launchTime) / 1 days;
-        if (day + 16 <= current) {
-            a.matured += amount;
-            return;
-        }
-        Vintage storage v = a.vintages[day % 16];
-        if (v.amount != 0 && v.day != day) {
+        Vintage storage v = a.vintages[e % 32];
+        if (v.amount != 0 && v.epoch != e) {
             a.matured += v.amount;
             v.amount = 0;
         }
-        v.day = uint64(day);
-        v.amount += uint192(amount);
+        v.epoch = uint64(e);
+        if (at > v.at || v.amount == 0) v.at = uint64(at);
+        v.amount += amount;
+        emit Credited(p, e, amount);
     }
 
-    function _consume(address player, uint256 amount, bool taxed) private returns (uint256 tax) {
-        Account storage a = accounts[player];
+    function taxBps(uint256 age) public pure returns (uint256) {
+        return age >= 7 days ? 500 : 2000 - 1500 * age / 7 days;
+    }
+
+    function _consume(address p, uint256 amount, bool taxed) private returns (uint256 tax) {
+        Account storage a = accounts[p];
         if (amount == 0 || amount > a.pending) revert InsufficientBalance();
-        uint256 current = (block.timestamp - launchTime) / 1 days;
-        for (uint256 i; i < 16; ++i) {
-            Vintage storage v = a.vintages[i];
-            if (uint256(v.day) + 16 <= current) {
-                a.matured += v.amount;
-                v.amount = 0;
-            }
-        }
         a.pending -= amount;
         uint256 used = Math.min(amount, a.matured);
         a.matured -= used;
         amount -= used;
-        if (taxed) tax = used * params.get(Params.Key.TaxFloorBps) / 10000;
-        uint256 first = current > 15 ? current - 15 : 0;
-        for (uint256 day = first; day <= current && amount != 0; ++day) {
-            Vintage storage v = a.vintages[day % 16];
-            if (v.day != day) continue;
+        if (taxed) tax = used * 500 / 10000;
+        uint256 first = epoch > 31 ? epoch - 31 : 0;
+        // Old slots are consumed before newer slots; all skipped generations have matured.
+        for (uint256 n; n < 32 && amount != 0; ++n) {
+            Vintage storage v = a.vintages[(first + n) % 32];
+            if (v.amount == 0) continue;
             used = Math.min(amount, v.amount);
-            v.amount -= uint192(used);
+            v.amount -= used;
             amount -= used;
-            if (taxed) {
-                uint256 vintageEnd = launchTime + (day + 1) * 1 days;
-                uint256 age = block.timestamp > vintageEnd ? block.timestamp - vintageEnd : 0;
-                tax += used * taxBps(age) / 10000;
-            }
+            if (taxed) tax += used * taxBps(block.timestamp > v.at ? block.timestamp - v.at : 0) / 10000;
         }
         assert(amount == 0);
     }
 
-    function taxBps(uint256 age) public view returns (uint256) {
-        uint256 floor = params.get(Params.Key.TaxFloorBps);
-        uint256 start = params.get(Params.Key.TaxDay0Bps);
-        uint256 span = params.get(Params.Key.TaxDecaySeconds);
-        if (age >= span) return floor;
-        return start - (start - floor) * age / span;
-    }
-
     function claim(uint256 amount) external nonReentrant returns (uint256 net) {
-        _checkpoint(64);
-        _settle(msg.sender, 64);
         uint256 tax = _consume(msg.sender, amount, true);
-        redistribution += tax;
+        queuedTax += tax;
         net = amount - tax;
         pool.pay(msg.sender, net);
         emit Claimed(msg.sender, amount, tax);
     }
 
-    function spend(address player, uint256 nominal, uint256 recycleBps)
-        external
-        onlyCore
-        nonReentrant
-        returns (uint256 consumed)
-    {
-        if (!_checkpoint(64) || !_settle(player, 64)) revert CatchUpRequired();
-        if (recycleBps > 10000) revert InvalidValue();
-        consumed = Math.mulDiv(nominal, 10000, 10000 + params.get(Params.Key.IngameBonusBps), Math.Rounding.Ceil);
-        _consume(player, consumed, false);
-        uint256 recycled = consumed * recycleBps / 10000;
-        uint256 burned = consumed - recycled;
-        if (recycled != 0) pool.recycle(recycled);
-        if (burned != 0) pool.pay(burnVault, burned);
-        burnInWeek[player][(block.timestamp - launchTime) / 7 days] += burned;
-        emit Spent(player, consumed, burned);
+    function spend(address p, uint256 nominal) external onlyCore nonReentrant returns (uint256 consumed) {
+        consumed = Math.mulDiv(nominal, 10000, 10500, Math.Rounding.Ceil);
+        _consume(p, consumed, false);
+        pool.recycle(consumed);
+        emit Spent(p, consumed);
     }
 
-    function recordWalletSpend(address player, uint256 amount) external onlyCore {
-        burnInWeek[player][(block.timestamp - launchTime) / 7 days] += amount;
-        emit Spent(player, amount, amount);
+    function scrap(address p, uint256 hash, uint256 minimum) external onlyCore nonReentrant returns (uint256 amount) {
+        amount = Math.mulDiv(hash, lastYieldPerHash, 6 ether);
+        amount = Math.min(amount, scrapAllowance);
+        if (amount < minimum) revert InsufficientBalance();
+        scrapAllowance -= amount;
+        if (amount != 0) _credit(p, amount, epoch, block.timestamp);
     }
 
-    function repair(address player, uint256 points) external onlyCore {
-        Account storage a = accounts[player];
-        uint256 d = _durability(a, block.timestamp);
-        if (points == 0 || points > 100 || d + points * 1 ether > 100 ether) revert InvalidValue();
-        a.durability = d + points * 1 ether;
-        a.maintainedAt = block.timestamp;
+    function seasonReady(uint256 week) external view returns (bool) {
+        return ready() && epoch != 0 && epochs[epoch].start >= launchTime + (week + 1) * 7 days;
     }
 
-    function prepay(address player, uint256 amount) external onlyCore {
-        Account storage a = accounts[player];
-        uint256 debt = Math.min(a.upkeepDebt, amount);
-        a.upkeepDebt -= debt;
-        a.powerCredit += amount - debt;
+    function releasePrize(uint256 amount) external nonReentrant {
+        if (msg.sender != address(season)) revert Unauthorized();
+        pool.recycle(amount);
     }
 
-    function submitInspection(uint256 week, address player) external nonReentrant {
-        uint256 end = launchTime + (week + 1) * 7 days;
-        if (block.timestamp < end || block.timestamp >= end + 1 days) revert TooEarly();
-        if (!_checkpoint(64) || !_settle(player, 64)) revert CatchUpRequired();
-        uint256 gross = grossInWeek[player][week];
-        if (gross == 0 || !eligibleInWeek[player][week]) revert InvalidValue();
-        uint256 score = Math.mulDiv(burnInWeek[player][week], 1e18, gross);
-        address winner = inspectionWinner[week];
-        if (
-            winner == address(0) || score > inspectionScore[week]
-                || (score == inspectionScore[week] && uint160(player) < uint160(winner))
-        ) {
-            inspectionWinner[week] = player;
-            inspectionScore[week] = score;
-            emit InspectionCandidate(week, player, score);
-        }
-    }
-
-    function finalizeInspection(uint256 week) external nonReentrant {
-        if (block.timestamp < launchTime + (week + 1) * 7 days + 1 days) revert TooEarly();
-        if (inspectionPaid[week]) revert AlreadyDone();
-        if (!_checkpoint(64)) revert CatchUpRequired();
-        inspectionPaid[week] = true;
-        uint256 prize = weekPrize[week];
-        address winner = inspectionWinner[week];
-        if (winner == address(0)) {
-            if (prize != 0) pool.recycle(prize);
-        } else if (prize != 0) {
-            _credit(winner, prize, (block.timestamp - launchTime) / 1 days);
-        }
-        emit InspectionPaid(week, winner, prize);
+    function award(address p, uint256 amount) external nonReentrant {
+        if (msg.sender != address(season)) revert Unauthorized();
+        _credit(p, amount, epoch, block.timestamp);
     }
 }

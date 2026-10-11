@@ -3,108 +3,123 @@ pragma solidity 0.8.26;
 import {BaseTest} from "./Base.t.sol";
 import {Test} from "forge-std/Test.sol";
 import {Deploy} from "../script/Deploy.s.sol";
+import {Params} from "../src/Params.sol";
 import {MockToken} from "./mocks/MockToken.sol";
-import {FarmCore} from "../src/FarmCore.sol";
 
-contract EconomyHandler is Test {
-    Deploy.Deployment internal d;
-    MockToken internal token;
+contract GameHandler is Test {
+    Deploy.Deployment private d;
     address[2] public actors;
 
-    constructor(Deploy.Deployment memory deployment, MockToken token_, address a, address b) {
+    constructor(Deploy.Deployment memory deployment, address a, address b) {
         d = deployment;
-        token = token_;
         actors = [a, b];
     }
 
-    function advance(uint32 seconds_) external {
-        vm.warp(vm.getBlockTimestamp() + bound(seconds_, 1, 2 days));
-        d.rewards.checkpoint(64);
+    function buy(uint256 who) external {
+        address p = actors[who % 2];
+        uint256 price = d.packs.price();
+        vm.prank(p);
+        try d.packs.openPack{value: price}(1) {} catch {}
     }
 
-    function placeOrWithdraw(uint8 who) external {
-        address actor = actors[who % 2];
-        if (d.farm.itemAt(actor, 4, 0) == 0) {
-            vm.prank(actor);
-            try d.farm.place(1, 4, 0) {} catch {}
-        } else {
-            vm.prank(actor);
-            try d.farm.unplace(4, 0) {} catch {}
+    function resolve(uint256 id) external {
+        uint256 n = d.packs.nextId();
+        if (n <= 1) return;
+        id = id % (n - 1) + 1;
+        vm.roll(vm.getBlockNumber() + 3);
+        try d.packs.resolve(id, 1) {} catch {}
+    }
+
+    function equip(uint256 who, uint256 id, uint256 slot) external {
+        uint256 n = d.items.nextId();
+        if (n <= 1) return;
+        vm.prank(actors[who % 2]);
+        try d.farm.place(id % (n - 1) + 1, 0, slot % 6) {} catch {}
+    }
+
+    function unplace(uint256 who, uint256 slot) external {
+        vm.prank(actors[who % 2]);
+        try d.farm.unplace(0, slot % 6) {} catch {}
+    }
+
+    function advance(uint256 gap) external {
+        if (!d.rewards.ready()) {
+            try d.rewards.processEpoch(8) {} catch {}
+            return;
         }
+        uint256 n = vm.getBlockNumber();
+        vm.roll(n + 3);
+        vm.setBlockhash(n + 1, keccak256(abi.encode(n)));
+        vm.warp(d.rewards.epochEnd() + gap % 1 days);
+        try d.rewards.advanceEpoch() {} catch {}
     }
 
-    function claim(uint8 who, uint16 fraction) external {
-        address actor = actors[who % 2];
-        d.rewards.settle(actor, 64);
-        uint256 pending = d.rewards.pending(actor);
-        if (pending == 0) return;
-        uint256 amount = pending * bound(fraction, 1, 10000) / 10000;
-        if (amount == 0) return;
-        vm.prank(actor);
-        d.rewards.claim(amount);
+    function claim(uint256 who, uint256 amount) external {
+        address p = actors[who % 2];
+        uint256 n = d.rewards.pending(p);
+        if (n == 0) return;
+        vm.prank(p);
+        try d.rewards.claim(amount % n + 1) {} catch {}
     }
 
-    function prepay(uint8 who) external {
-        address actor = actors[who % 2];
-        d.rewards.settle(actor, 64);
-        uint256 amount = d.rewards.pending(actor) / 20;
-        if (amount == 0) return;
-        vm.prank(actor);
-        try d.farm.spend(FarmCore.SpendKind.Electricity, 0, 0, amount) {} catch {}
+    function expand(uint256 who, bool wallet) external {
+        vm.prank(actors[who % 2]);
+        try d.farm.expand(wallet) {} catch {}
     }
 
-    function donate(uint96 amount_) external {
-        uint256 balance = token.balanceOf(address(this));
-        if (balance == 0) return;
-        uint256 amount = bound(amount_, 1, balance);
-        token.approve(address(d.pool), amount);
-        d.pool.donate(amount);
+    function tokenPack(uint256 who, bool wallet) external {
+        vm.prank(actors[who % 2]);
+        try d.farm.buyTokenPack(wallet) {} catch {}
     }
 }
 
 contract InvariantsTest is BaseTest {
-    EconomyHandler internal handler;
+    GameHandler private handler;
 
     function setUp() public override {
         super.setUp();
-        fund(10_000_000 ether);
-        mintItem(alice, 0, 0, 0, false);
-        mintItem(bob, 0, 0, 0, false);
-        vm.prank(alice);
-        d.farm.place(1, 4, 0);
-        vm.prank(bob);
-        d.farm.place(1, 4, 0);
-        handler = new EconomyHandler(d, token, alice, bob);
-        token.transfer(address(handler), 10_000_000 ether);
+        fund(100_000_000 ether);
+        payPack(alice);
+        payPack(bob);
+        place(alice, 0, 0, 0);
+        place(bob, 0, 0, 0);
+        handler = new GameHandler(d, alice, bob);
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](5);
-        selectors[0] = handler.advance.selector;
-        selectors[1] = handler.placeOrWithdraw.selector;
-        selectors[2] = handler.claim.selector;
-        selectors[3] = handler.prepay.selector;
-        selectors[4] = handler.donate.selector;
-        targetSelector(FuzzSelector(address(handler), selectors));
     }
 
-    function invariantTokensConservedAndPendingFullyBacked() public view {
-        assertEq(
-            token.balanceOf(address(d.pool)) + token.balanceOf(address(d.burn)) + token.balanceOf(alice)
-                + token.balanceOf(bob) + token.balanceOf(address(handler)),
-            20_000_000 ether
+    function invariantTokenConservationNoBurns() public view {
+        assertEq(token.totalSupply(), 1_000_000_000 ether);
+        uint256 sum = token.balanceOf(address(this)) + token.balanceOf(address(market))
+            + token.balanceOf(address(d.pool)) + token.balanceOf(alice) + token.balanceOf(bob);
+        assertEq(sum, token.totalSupply());
+        assertEq(token.balanceOf(address(0)), 0);
+    }
+
+    function invariantReservesBackedAndPendingCovered() public view {
+        assertLe(d.pool.reserved(), token.balanceOf(address(d.pool)));
+        assertGe(
+            d.pool.reserved(),
+            d.rewards.pending(alice) + d.rewards.pending(bob) + d.rewards.queuedTax() + d.rewards.currentRedis()
         );
-        assertGe(token.balanceOf(address(d.pool)), d.pool.reserved());
-        assertGe(d.pool.reserved(), d.rewards.pending(alice) + d.rewards.pending(bob) + d.rewards.redistribution());
     }
 
-    function invariantHashAndCustodyConserved() public view {
-        uint256 total;
-        for (uint256 i; i < 128; ++i) {
-            total += d.rewards.bucketHash(i);
+    function invariantInventoryAndEthLiabilities() public view {
+        assertLe(d.items.inventory(alice), d.items.capacity(alice));
+        assertLe(d.items.inventory(bob), d.items.capacity(bob));
+        uint256 due = d.fees.rewardETH() + d.fees.heartbeatBalance() + d.fees.credit(team)
+            + d.fees.credit(address(handler)) + d.fees.credit(address(this));
+        assertEq(address(d.fees).balance, due);
+        assertLe(d.fees.heartbeatBalance(), 1 ether);
+    }
+
+    function invariantPriceAndParamsBounds() public view {
+        assertGe(d.packs.price(), d.params.get(Params.Key.PriceFloor));
+        assertLe(d.packs.price(), d.params.get(Params.Key.PriceCeiling));
+        for (uint256 i; i < 32; ++i) {
+            Params.Key k = Params.Key(i);
+            (uint256 low, uint256 high) = d.params.bounds(k);
+            assertGe(d.params.get(k), low);
+            assertLe(d.params.get(k), high);
         }
-        assertEq(total, d.rewards.totalHash());
-        assertEq(total, d.rewards.accountHash(alice) + d.rewards.accountHash(bob));
-        uint256 placed = (d.farm.itemAt(alice, 4, 0) == 1 ? 1 : 0) + (d.farm.itemAt(bob, 4, 0) == 1 ? 1 : 0);
-        assertEq(d.items.balanceOf(address(d.farm), 1), placed);
-        assertEq(d.items.balanceOf(alice, 1) + d.items.balanceOf(bob, 1) + placed, 2);
     }
 }

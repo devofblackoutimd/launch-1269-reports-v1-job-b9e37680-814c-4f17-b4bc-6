@@ -1,52 +1,44 @@
 # Simulation provenance and limits
 
-The supplied workspace contained no earlier implementation. The linked research job trees contained report Markdown, but not either Python program mentioned in those reports. `sim/blackout_sim_v2.py` is therefore a **new reconstruction from report v2 and its carried v1 assumptions**, extended for the requested six equipment types and room sets. It is not the recovered original model and does not claim to reproduce its tables.
+`sim/blackout_sim_v3.py` is a new standard-library-only, deterministic scenario model for the v3 contracts. The previous job's `sim/blackout_sim_v2.py` and archived artifacts remain as historical evidence; they are not v3 verification. No original external v2 simulator is claimed to have been recovered. The prior repository's assumed initial constant-product liquidity (900M tokens /10 ETH),100M swarm allocation, and steady/hype/weak arrival shapes are retained as modeling assumptions, not verified launch commitments.
 
-The retrieved report bytes matched the artifact identifiers:
+## Reproduce
 
-| Source | SHA-256 |
-|---|---|
-| [v1, job b9e37680-814c-4f17-b4bc-68272b77304d](https://api.imd.fun/artifacts/dfbd6842bdf572b684b09c4e56d150483da21ccc8dfb14d05fb01409c4441c0b) | `dfbd6842bdf572b684b09c4e56d150483da21ccc8dfb14d05fb01409c4441c0b` |
-| [v2, job 10d225a6-92cb-4cde-9d4b-ec076b078f7d](https://api.imd.fun/artifacts/cd34576baf9021fc2bd1d6f12da420599bc2bf0355465b7ab0796eabfe6be64a) | `cd34576baf9021fc2bd1d6f12da420599bc2bf0355465b7ab0796eabfe6be64a` |
+```sh
+python3 sim/blackout_sim_v3.py --check
+python3 sim/blackout_sim_v3.py
+python3 sim/blackout_sim_v3.py --bootstrap-eth 40 --output artifacts/funded-sensitivity
+python3 sim/blackout_sim_v3.py --bootstrap-eth 40 --pace-policy hold --output artifacts/tuned-funded
+python3 sim/tune_v3.py
+python3 sim/policy_sensitivity_v3.py
+```
 
-## Inputs taken from the reports
+These programs do no network calls or transactions. `--bootstrap-eth` represents a hypothetical additional ETH-funded pool token purchase and donation before play. It is external capital, not a token mint, fee income or a supplied deployment value. The main run uses **zero** initial reward-pool endowment. Do not silently adopt the funded sensitivity as the launch budget.
 
-| Input | Model value |
-|---|---|
-| Supply and opening pool | 1 billion tokens; 900 million in a constant-product pool, 100 million swarm allocation |
-| Virtual reserve / horizon | 10 ETH, 35 days; 3 and 5 ETH sensitivities |
-| Swarm selling | Half its allocation sold evenly over days 1–14; no-sale sensitivity |
-| Newcomers | Steady 150/day for days 1–3, then 80; hype `600*exp(-(day-1)/5)+25`; weak `40*exp(-(day-1)/15)+5` |
-| Initial pack demand | Three per newcomer, scaled by `(0.01/price)^0.7`; 3% of active earlier farmers buy one extra pack/day |
-| Demand response | `min(1,sqrt(21/perceivedPayback))` |
-| Pack price | 0.01 ETH, weekly 15% decline to 0.006, demand premium capped at 50% |
-| Rarity / hash | Common/Rare/Epic/Legendary 70/22/7/1%; base hash 10/28/80/250 |
-| Pool emission | 3.5%/day, two half-day ticks, +5% for Surge |
-| Churn | 1.5%–7.5%/day, depending on yield relative to 2% of paid cost/day |
-| Sell intent / redirection | 65%; redirect `min(60%,1.5*averageWithdrawalTax)` of intended sells; defer by excess sell-fee fraction |
-| Claim timing | 40%/30%/30% at ages 0/3/7 days; tax 20% falling to 5% over seven days |
-| In-game spending | 5% purchasing bonus; 25% of redirected spending allocated to token packs, 70% recycled and 30% burned |
-| Referrals | 40% participation assumption, 5% on top of fresh mining; no recursive referral on redistribution |
-| Starter | 35% of 1,999 entitlements rounds to 700 packs; half in first three days of window; Rare/Epic 92/8%, half hash until paid activation |
-| Lobby / external trading | 0.00004 ETH/active farm/day; round-trip trader volume 0.5 times pack ETH |
-| Fees | The four immutable split rows in `design.md`; additional 0.25% network fee on swaps |
-| Dynamic-fee approximation | Hour imbalance is 1.25 times daily imbalance; deviation is half the daily price drop; total including network at most 15% |
-| Tariff controller | Initially 15%; reduce 10% when projected new-pack payback exceeds 35 days; increase 10% below 25 days while price falls; range 10%–30% |
-| Inspection | 1% of fresh weekly mining, highest burn/gross among eligible farms; half the gross prize designated for immediate sale through normal withdrawal tax |
+## Scenario inputs
 
-## Reconstruction choices
+- 35 days, 140 six-hour steps, seed 20261011. All 140 shifts and settlement batches occur on time. Costs of keeper gas and latency are not modeled.
+- Approximately 900 Identity MD holders share the existing 100M allocation. The model sells 35%/50%/65% of that allocation over the first 14 days in steady/hype/weak. Exactly 900 starter claims arrive uniformly between hour 48 and day 16. Snapshot ownership is assumed valid.
+- Steady new paid farms/day:150 for the first 3 days, then 80. Hype: `600*exp(-day/5)+25`. Weak: `40*exp(-day/15)+5`. Joining demand scales down by `min(1,sqrt(21/currentPaybackForecast))`. These behavioral curves are assumptions, not forecasts derived from users.
+- New farms purchase about `3*(0.010/currentPackPrice)^0.7` packs, rounded to at least one. Inventory capacity limits actual opening. Equipment is selected greedily by standalone hash across unlocked rooms; it does not globally optimize combinations. Unequipped excess is retained. No speculative item resale exists because items are soulbound.
+- Sale intent is **65%** of available internal holdings at each step, with 35% retained/reinvested. Requested withdrawals wait 0/3/7 days with weights 40/30/30; immediate intent executes on the next six-hour step. Vintage-age taxes are applied at modeled execution. The queue approximates per-epoch vintages and can include older retained rewards; it is not an exact EVM replay.
+- 40% referral adoption is modeled as an aggregate 5% gross reward on top. Attribution is aggregated to the earning farm for token conservation; actual on-chain referrals pay the inviter. This affects individual payback interpretation.
+- Maintenance recycles 3% of net yield and restores 0.6 durability points per step, with identical restoration in the no-event shadow. This is a behavioral approximation, not the exact discrete repair price/action. Token pack attempt probability is 0.75% per epoch; ETH lobby is 0.00001 per active farm/epoch. Expansion, overclock purchases, merging, and scrap *behavior* are not simulated; the global scrap reserve is modeled. Contract tests cover their actual accounting.
+- Churn probability/day is 1.5% when recent daily yield is at least 2% of paid cost, otherwise 7.5%, sampled per epoch. Quitters retain tokens/items and can finish queued withdrawals; new mining stops. The same externally sampled participation is used for event-loss comparison.
+- External round-trip volume is 50% of pack ETH volume. Trades conserve token inventory. Pool buys and swaps include project/network fees; progressive custom surcharge is a capped aggregate pressure proxy rather than the contract's exact rolling-hour/day/TWAP formula. Price impact follows an unconcentrated constant-product AMM, not a full v4 liquidity distribution.
+- Spot price approximates a thirty-minute TWAP within a six-hour step. The simulation does not model oracle attacks, slippage rejection, liquidity withdrawal, sequencer manipulation or MEV. Foundry separately tests actual TWAP and v4 settlement behavior.
+- Weekly district packs, ticket-weighted distinct lottery winners and 1% season emission are included; a lottery item can wait for inventory in the real contract, while the model records its entitlement as owned. Weekly lottery uses the model's ordinary Epic+ draw approximation; contract lottery is explicitly 90% Epic/10% Legendary.
 
-- Items are discrete, with the new type probabilities and set rules documented in `design.md`. A seeded greedy policy puts the highest-hash equipment into rooms one per type, then standalone slots, capped at 40 equipment. It does not solve optimal placement. Generator adoption defaults to zero because neither report specifies it; `Settings.generator_fraction` supports an explicit sensitivity.
-- Whole token packs cost the current pack ETH price converted at model spot, discounted by 1.05. Unused budgets accumulate as held tokens; at most one pack per farmer/day is bought. This is deliberately not fractional NFT issuance, and produces fewer token packs than v2's aggregate model.
-- Maintenance is a daily gross-yield proxy: tariff times the room power/hash ratio, 5% repair and 2% merge participation; 15% of the remaining yield initially funds upgrades. Upgrade progress is averaged continuously, with escalating costs and five-level cap. Actual contracts use integer levels, durability, electricity indices, daily vintages and exact token amounts. The simulation is an economic scenario model, not an EVM-equivalent accounting implementation.
-- The 2% hash soft cap is recalculated across current model farms each tick. Contracts use permissionless refresh snapshots to keep work bounded. The model therefore assumes active maintenance and refresh, not indefinite stale on-chain farms.
-- Swarm event choices are sampled from v1's 30/25/20/15/10% Surge/Heat/Blackout/Audit/Calm mix, subject to contract rolling caps/minimum-recovery rules and six-tick district cooldown. Lobby weights affect Blackout selection. Resolution latency is omitted. Hash and emission changes, electricity discounts, heat protection and blackout shields are included.
-- Referral income is attributed to the referred population in aggregate; there is no individual inviter graph. Weekly inspection selection includes that week's last daily activity. Intraday claim ages, proof-resolution latency, the candidate window and rounding are collapsed into daily actions.
-- System buys execute as daily aggregates. As in report v2's stated simulation, they enter the aggregate buy-imbalance estimate; **the production hook excludes its own system buys**. The on-chain rolling windows, output checks, 31-minute TWAP warm-up, batch spacing, current-sell inclusion and slow fee decay are tested separately with Solidity, including real v4 settlement.
-- Beta hourly caps are implemented/tested in the contracts. They are not an extra restriction on daily model totals: v2 states that the initial queue clears within the first day. The model does not reproduce the missing original hourly queue/stress-test program.
-- Payback is computed for still-active paid farmers, with later purchases included in their cost. Held and queued tokens are marked at 95% of model spot; actual sales use execution proceeds. The last seven yield observations project at a fitted daily multiplier bounded to 0.80–1.00, with a 120-day cutoff. Finite averages exclude non-paying outcomes, whose proportions are shown separately. Quitters are also reported separately.
-- The reconstructed stall statistic starts at day three and uses the joining cohort's median projected payback above 60 days, or active farms below 25% of their prior peak. Its cohort/projection implementation cannot be asserted identical to the unavailable original source.
+## Policy and outcomes
 
-The program checks total tokens across AMM, swarm, reward pool, sink, player holdings, delayed claims and redistribution every day. Fresh emissions are transfers out of pool holdings, not token minting. Floating-point error is reported in whole tokens; the contract tests use exact integer conservation. Behavioral assumptions, virtual liquidity and marked holdings do not establish redeemable ETH or a promised return.
+Default emission starts 3.5%, rises only in 10% daily steps toward 6% when payback is poor and conservative runway permits; tariff starts 15%, falls toward 10%. Target pace 20/hour reduces toward 10 under the baseline policy; this slows item issuance but can worsen demand in a decaying hype scenario. Positive mix starts 25% and can rise toward 50%. Hard Params values and the contract's rolling caps remain binding.
 
-Run `python3 sim/blackout_sim_v2.py --check` for model checks and `python3 sim/blackout_sim_v2.py > artifacts/simulation.md` to regenerate the seeded results.
+The model assumes timely swarm plans following the fallback-shaped event schedule, with minimum permitted negative severity 50% and full positive severity. It is a tuned operating case. Autonomous missing-plan/expired-hash behavior uses severity 100% on-chain and is covered by contract tests; do not project the tuned loss result onto an unattended deployment. Event loss is a parallel no-negative-event health/destruction counterfactual using the same prices, emission policy, participants and budget. It includes lasting damage; it does not count price changes caused by a different hypothetical whole-economy path. Loss is expressed against counterfactual gross mining before electricity. Dividing the reported loss ratio by 0.70 gives a conservative after-tariff bound at the maximum 30% tariff; the tuned case remains below 10% on that stricter denominator. Per-farm positive differences are clipped to zero before summing, so one farm's Green gain cannot hide another's damage.
+
+Realized payback means cash received after withdrawal tax, trading fees and market price impact reaches cumulative modeled pack/lobby cost. The main table reports the median across the **whole joining cohort**, treating unrepaid farms as right-censored; it is not reached when half or more are still unrepaid. Detailed tables additionally show conditional medians among only repaid farms, fractions repaid and fractions repaid within ten days. None implies every joiner recovers cost. Estimated medians additionally project surviving unpaid farms at constant last-day yield and exclude unrepaid quitters. Later joining weeks are right-censored; week 5 often has no realized payback. Those estimates are labeled separately.
+
+Stall is the first day from day 3 when either active farms fall below 25% of their prior peak or the median live-farm forward cost / recent daily mining exceeds 60 days. It is an explicit economic-health definition, not a contract halt or pool exhaustion. Thus weak growth can remain mechanically alive despite poor payback. Runway is available tokens divided by conservative gross daily commitments; percentage emission can keep that ratio healthy while ETH purchasing power falls.
+
+All 1B tokens reconcile each epoch across AMM, swarm, pool, reservations, internal holdings and pending withdrawals. Floating-point tolerance is 0.02 token in 1B; actual recorded errors are much smaller. This checks accounting, not economic truth. ETH tables include team receipts, heartbeat balance and bounties paid; they exclude gas, taxes outside the game and recipient investment returns.
+
+The zero-endowment main outcomes do **not** satisfy all requested economic targets. The explicitly funded 40 ETH, hold-pace scenario reaches a 9-day whole-cohort steady median, 22.25/21-day hype stall and≤5.32% gross weekly event losses in the two fee paths. The report states the shortfall and separates conditional funded sensitivities. Parameter tuning cannot create external ETH or guarantee a return; a funding/liquidity/demand decision and a new simulation are required before an economic go decision.

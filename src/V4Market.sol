@@ -40,7 +40,7 @@ contract V4Market is ReentrancyGuard {
     uint256 public updatedAt;
     uint256 public cumulative;
     uint256 public lastPrice;
-    uint256 public storedFeeWad = 100 ether;
+    uint256 public storedFeeWad = 200 ether;
     uint256 public feeTimestamp;
     bool private buying;
     event PriceObserved(uint256 timestamp, uint256 tokensPerETH);
@@ -197,17 +197,22 @@ contract V4Market is ReentrancyGuard {
         if (s > b) day = Math.mulDiv(s - b, 10000, s + b + 2 ether);
     }
 
+    function projectBps() public pure virtual returns (uint256) {
+        return 200;
+    }
+
     function _sellFee(uint256 price) private returns (uint256 fee, uint256 hour, uint256 day, uint256 dev) {
+        if (projectBps() == 100) return (100, 0, 0, 0);
         (hour, day) = imbalances();
         uint256 average;
         // Trading is possible during warmup; the deviation component starts only when TWAP is ready.
         if (block.timestamp >= initializedAt + 31 minutes) average = twap();
         if (average != 0 && price > average) dev = Math.min(1000, 10000 - Math.mulDiv(average, 10000, price));
-        uint256 target = 100 + params.get(Params.Key.SellHourBps) * hour / 10000 + params.get(Params.Key.SellDayBps)
-            * day / 10000 + params.get(Params.Key.SellDeviationBps) * dev / 10000;
+        uint256 target = projectBps() + params.get(Params.Key.SellHourBps) * hour / 10000
+            + params.get(Params.Key.SellDayBps) * day / 10000 + params.get(Params.Key.SellDeviationBps) * dev / 10000;
         target = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, target) * 1 ether;
         uint256 fall = feeTimestamp == 0 ? 0 : (block.timestamp - feeTimestamp) * 100 ether / 10 minutes;
-        uint256 decayed = storedFeeWad > fall ? storedFeeWad - fall : 100 ether;
+        uint256 decayed = storedFeeWad > fall ? storedFeeWad - fall : projectBps() * 1 ether;
         storedFeeWad = Math.max(target, decayed);
         feeTimestamp = block.timestamp;
         fee = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, (storedFeeWad + 1 ether - 1) / 1 ether);
@@ -222,9 +227,9 @@ contract V4Market is ReentrancyGuard {
         _observe(spot());
         if (!p.zeroForOne) return (this.beforeSwap.selector, 0, 0);
         uint256 ethIn = uint256(-p.amountSpecified);
-        uint256 fee = ethIn * 125 / 10000;
+        uint256 fee = ethIn * (projectBps() + NETWORK_BPS) / 10000;
         if (fee > uint256(uint128(type(int128).max))) revert InvalidValue();
-        _take(ethIn * 100 / 10000, 0, fee - ethIn * 100 / 10000);
+        _take(ethIn * projectBps() / 10000, 0, fee - ethIn * projectBps() / 10000);
         return (this.beforeSwap.selector, int256(fee << 128), 0);
     }
 
@@ -246,8 +251,8 @@ contract V4Market is ReentrancyGuard {
         uint256 output = uint256(uint128(ethDelta));
         _record(true, output);
         (uint256 bps, uint256 hour, uint256 day, uint256 dev) = _sellFee(price);
-        uint256 base = output * 100 / 10000;
-        uint256 excess = output * (bps - 100) / 10000;
+        uint256 base = output * projectBps() / 10000;
+        uint256 excess = output * (bps - projectBps()) / 10000;
         uint256 network = output * NETWORK_BPS / 10000;
         _take(base, excess, network);
         emit SellFee(sender, output, bps, hour, day, dev);
@@ -274,7 +279,7 @@ contract V4Market is ReentrancyGuard {
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         if (msg.sender != address(manager) || !buying) revert Unauthorized();
         (uint256 ethIn, uint256 minOut, address recipient) = abi.decode(data, (uint256, uint256, address));
-        uint256 base = ethIn * 100 / 10000;
+        uint256 base = ethIn * projectBps() / 10000;
         uint256 network = ethIn * 25 / 10000;
         uint256 input = ethIn - base - network;
         _observe(spot());

@@ -3,7 +3,6 @@ pragma solidity 0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IEmission} from "./interfaces/Interfaces.sol";
 import "./lib/Errors.sol";
 
 contract RewardPool is ReentrancyGuard {
@@ -32,10 +31,9 @@ contract RewardPool is ReentrancyGuard {
 
     function donate(uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidValue();
-        if (!IEmission(rewards).checkpoint(64)) revert CatchUpRequired();
-        uint256 beforeBalance = token.balanceOf(address(this));
+        uint256 before_ = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), amount);
-        if (token.balanceOf(address(this)) - beforeBalance != amount) revert InvalidValue();
+        if (token.balanceOf(address(this)) - before_ != amount) revert InvalidValue();
         emit Donated(msg.sender, amount);
     }
 
@@ -50,8 +48,8 @@ contract RewardPool is ReentrancyGuard {
         emit Recycled(amount);
     }
 
-    function pay(address to, uint256 amount) external onlyRewards {
-        if (to == address(0)) revert InvalidAddress();
+    function pay(address to, uint256 amount) external onlyRewards nonReentrant {
+        if (to == address(0) || to == address(this)) revert InvalidAddress();
         reserved -= amount;
         token.safeTransfer(to, amount);
         emit Paid(to, amount);

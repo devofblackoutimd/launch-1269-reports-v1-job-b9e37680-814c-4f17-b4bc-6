@@ -1,29 +1,29 @@
-# Implementation-author adversarial review
+# Fresh contributor review — BLACKOUT v3
 
-This review was performed during implementation. It is **not independent** and is not a release audit. No external reviewer, Slither run or Mythril run is claimed. The RPC-backed Robinhood fork smoke test passed; its limited native-clock scope does not validate the eventual application deployment and external market configuration.
+A separate contributor (`/root/fresh_review`) received fresh context rather than the implementation conversation. The contributor inspected contracts and tests read-only, reported findings, and reviewed the resulting repairs in successive passes. Their final response: “All reported high and medium findings are resolved. No remaining high or medium issues identified within the reviewed scope.” They did not independently rerun tests; the implementation contributor ran the recorded checks. This is a bounded adversarial review, not a third-party audit certification.
 
-| Area examined | Design / evidence |
-|---|---|
-| Authority | Immutable contract links; no owner, proxy, generic calls, admin withdrawals or extra minters. Unauthorized mint, parameter, event and callback paths revert in tests. All parameter keys have bounds and step-limit tests. |
-| User custody | ERC-1155 escrow accepts only a solicited transfer from its player. Exact owner/slot accounting and return paths; Starter movement cannot transfer ownership. Generator principal has its own vault and caller-only unlock. |
-| Pool solvency | Fresh liability reserved before accrual. Existing reservations excluded from emission. Pending rewards, referral budgets, tax redistribution and inspection prizes remain funded. Fuzz/stateful tests cover exact token and custody conservation. |
-| External calls | SafeERC20, checked incoming token deltas, checks before transfers, reentrancy guards. Malicious ERC-20 callbacks, rejecting transfers, ERC-1155 receiver callbacks, ETH recipient reentry and failed ETH delivery have regression tests. |
-| Randomness | Future native block commits, asynchronous resolution, expiry fallback and duplicate rejection. Tests cover Arbitrum native block semantics. This remains sequencer-trusted randomness; delaying resolution can select the deterministic fallback. |
-| AMM integration | Authenticated immutable PoolManager/pool callbacks; correct hook address flags; exact-input return deltas; real v4 liquidity/swap/settlement tests; system-buy output and balance checks. |
-| TWAP and fees | Cumulative ETH/token arithmetic prices, elapsed-time weighting, same-block manipulation test and mixed-price test. Current sells enter their own fee; fractional decay resists dust-reset griefing; hard 15% total cap. |
-| Operational failure | Expired events become Calm; event quotas permit recovery after missed ticks. Pack pause has an immutable maximum and cooldown. Emission/account catch-up is permissionless and bounded. |
+| Severity | Finding | Repair and evidence |
+|---|---|---|
+| High | Unlimited new packs could be scrapped against a stale high yield rate, consuming arbitrary reward-pool capital. | Scrap is paid only from a pre-reserved, shared allowance capped by nominal emission/6 and unused fresh epoch budget. Old allowance recycles, empty epoch clears rate, and minimum-output protects the caller. Regression tests exercise repeated fresh scrap and empty epochs. |
+| High | Partial cable repair initially assumed restored combination values could only increase; valid Params with Mythic bonus below Legendary could underflow and block settlement. | Direct weighted endpoint interpolation for raw/productive/power/bonus. Fuzz regression uses a depleted Mythic Router and decreasing rarity bonus across all bounded repair fractions. |
+| Medium | Dust buyback could consume a shared cooldown and indefinitely delay useful buys. An intermediate exact-size repair was donation-sensitive and could lock shallow liquidity. | Removed the shared cooldown; any positive amount up to BuyBatch and available balance is valid, with TWAP/minimum-output and actual received-token checks. Tests cover dust followed by useful buys. |
+| Medium | Expired event entropy still included a swarm-selected number; predictable fallback could be ground. | Expired event seed excludes swarm number and uses fixed epoch/domain fallback. Lottery expiry rejects and requires a fresh future-block rearm. Tests cover deterministic fallback and expiry/rearm. |
+| Medium | Rolling-positive logic did not guarantee four positives in the first 20 epochs. | Reserve enough remaining slots in the initial window, then enforce rolling previous 19 counts. Tests cover initial and rolling quotas. |
+| Medium | Live health, paid-account status, overclock and Params could change an already elapsed epoch depending on batch timing. | Freeze farm state before mutations and snapshot epoch combo/tariff/emission settings. Separate immutable engine applies damage against the snapshot. Regression tests cover repair/purchase timing. |
+| Medium, final spec check | Paid XP could unlock the three-day room early through a prefix room count. | Independent room gates now preserve room 2 age even at level 10; regression buys XP early and verifies blocked/allowed room indices. The fresh contributor verified the repair. |
+| Medium | A queued cable-repair fix charged tokens but could not improve production before theft naturally expired. | Restore Router effects only for the remaining current-epoch time; half-epoch regression demonstrates actual benefit, with full effects next epoch and no rewrite of elapsed time. |
 
-Defects found and repaired during this work include:
+Additional review checked reserved redistribution rounding, stable rosters while processing, retirement, StandardAdapter callback authentication/settlement/output measurement, removal of the buy cooldown, and reserved scrap payout lifecycle. No reported high/medium remains open in the reviewed code.
 
-- Rarity hash multiplication initially inherited too narrow an integer type; explicit uint256 bases now cover Rare through Legendary and all six types.
-- Tax redistribution initially shared a referral-bearing index. Separate new-mining indices now prevent a referral top-up on recycled tax and preserve the entire tax amount for the next tick.
-- A reward-vintage ring originally covered only the default decay. Sixteen daily slots now safely cover the maximum 14-day setting, with a regression test for changing decay while rewards are outstanding.
-- An empty first-tick pool could snapshot zero emission until the following tick. It can now initialize its rate after the first funded buyback without crediting the unfunded past.
-- Mint-epoch bonuses now freeze at commitment, avoiding changed outcomes from waiting to resolve or later parameter changes.
-- The fee-decay representation retains fractional basis points, avoiding a timer reset attack using frequent tiny trades.
-- Grid quota validation now permits positive events to restore minimum frequencies after an outage instead of permanently rejecting all submissions.
-- A fully decayed farm can fund repairs from its own wallet; revival does not require already-claimable mining rewards.
+## Residual assumptions and risks
 
-Remaining material trust and operating limitations are documented, not treated as fixed findings: sequencer influence; Sybil wallet/referral/district selection; stale farm refresh snapshots; daily-average durability attribution; bounded catch-up gas; immutable configuration mistakes; ordinary non-taxed token requirements; conditional hook compatibility; and simulations based on unmeasured behavior. A malicious configured ERC-20 or market adapter is outside the plain-token/trusted-integration assumption. The swarm's external token allocation is not locked by these contracts.
+- Future L2 block hashes are not VRF randomness. The sequencer can influence them, and withholding resolution until expiry can force predictable pack/event fallback. N+2 and pre-shift commits remove direct caller choice of the live hash, not sequencer/keeper optionality. Lottery rearm avoids a deterministic expired prize draw but can be delayed. A stronger production randomness mechanism would require a separately specified integration.
+- Districts are deterministic address hashes; sybil/address grinding is possible. Tickets measure active epochs, not verified humans. Starter entitlements are constrained per snapshot tokenId, but account splitting elsewhere remains possible.
+- The immutable swarm has bounded numeric/event discretion. It cannot transfer pool assets, mint arbitrary items, select a farm/district, change team, pause claims or upgrade code. Bad economics can still result from valid choices or missing operations.
+- Epoch advancement is independent of roster size, but total settlement is linear in participating farms and audit selection uses a heap. A large roster requires many permissionless calls. The protocol pays only the shift bounty; it does not guarantee an economically self-funding settlement service.
+- Custom hook support, exact standard-hook fee forwarding, external standard TWAP implementation, zero additional pool fees, actual token behavior, snapshot provenance and final address plan are launch prerequisites. Mock oracle tests do not validate an unknown future oracle.
+- Arithmetic TWAP and slippage limits are not protection against sustained price manipulation or inadequate liquidity. StandardAdapter trusts its immutable oracle's reported window and pool binding. The actual source must be reviewed before use.
+- Full inventory deliberately blocks pack/item resolution; clients must retain receipts and make space. Weekly/free item entitlements survive failed mint claims. Gameplay changes wait for previous epoch settlement, while previously credited pull balances remain withdrawable.
+- The economic simulator is approximate and the unfunded baseline misses payback/longevity targets. Passing Solidity tests does not make returns sustainable.
 
-Before live funds, obtain a separate contributor's adversarial review of the final source, test the complete launch hook configuration on the actual chain, and verify the immutable address graph. No transaction or funded-wallet action was taken in this assignment.
+Checks actually run are listed in report.md and artifacts. No deployment, explorer verification, live asset transfer, static analyzer claim, or long-running external audit is implied.

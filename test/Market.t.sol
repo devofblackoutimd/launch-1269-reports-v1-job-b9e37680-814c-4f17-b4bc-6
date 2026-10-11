@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 import {BaseTest} from "./Base.t.sol";
 import {TestV4Market, MockV4Manager} from "./mocks/MockV4Manager.sol";
 import {PoolKey, SwapParams} from "../src/interfaces/IV4.sol";
+import {FeeRouter} from "../src/FeeRouter.sol";
 import {V4Market} from "../src/V4Market.sol";
 import "../src/lib/Errors.sol";
 
@@ -15,7 +16,17 @@ contract MarketTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("network recipient");
-        hook = new TestV4Market(address(manager), address(token), address(d.params), address(d.fees), network);
+        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        hook = new TestV4Market(address(manager), address(token), address(d.params), predicted, network);
+        d.fees = new FeeRouter(
+            address(token),
+            address(d.params),
+            address(hook),
+            address(d.pool),
+            address(d.packs),
+            address(d.grid),
+            address(d.rewards)
+        );
         vm.deal(address(manager), 10000 ether);
         token.transfer(address(manager), 10000 ether);
         manager.initializeHook(hook);
@@ -57,7 +68,7 @@ contract MarketTest is BaseTest {
         assertLt(hook.storedFeeWad(), peak);
         vm.warp(vm.getBlockTimestamp() + 25 hours);
         sell(1);
-        assertLe(hook.storedFeeWad(), 101 ether);
+        assertLe(hook.storedFeeWad(), 201 ether);
     }
 
     function testTwapAveragesEthPriceAcrossUnequalPrices() public {
@@ -90,9 +101,9 @@ contract MarketTest is BaseTest {
     function testBuyChargesOnlyBaseAndNetworkPullPayment() public {
         SwapParams memory p = SwapParams(true, -int256(1 ether), 4295128740);
         (, int256 delta,) = manager.invokeBefore(hook, p);
-        assertEq(uint256(delta >> 128), 0.0125 ether);
+        assertEq(uint256(delta >> 128), 0.0225 ether);
         assertEq(hook.networkCredit(), 0.0025 ether);
-        assertEq(d.fees.credit(team), 0.002 ether);
+        assertEq(d.fees.credit(team), 0.01 ether);
         hook.withdrawNetwork();
         assertEq(network.balance, 0.0025 ether);
         assertEq(hook.networkCredit(), 0);
