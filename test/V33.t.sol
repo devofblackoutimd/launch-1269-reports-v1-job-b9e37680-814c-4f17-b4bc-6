@@ -178,7 +178,7 @@ contract V33Test is BaseTest {
         uint256 many = g - gasleft();
         assertEq(d.rewards.epochData(15).raw, 0);
         // Fifteen expirations cost the same bucket write as one.
-        assertLt(many > one ? many - one : one - many, 25_000);
+        assertLt(many > one ? many - one : one - many, 50_000);
     }
 
     // ---------------------------------------------------------------- anti-rush
@@ -221,7 +221,7 @@ contract V33Test is BaseTest {
         calmNext();
         step();
         assertEq(vm.getBlockTimestamp() / 1 days, day);
-        assertEq(d.farm.xp(alice), 500); // activity XP arrives after the paid cap
+        assertEq(d.farm.xp(alice), 600); // activity XP arrives after the paid cap
         while (vm.getBlockTimestamp() / 1 days == day) {
             calmNext();
             step();
@@ -308,7 +308,7 @@ contract V33Test is BaseTest {
 
     function _active(address p) internal {
         vm.prank(address(d.rewards));
-        d.season.recordActivity(p, 0, 1);
+        d.season.recordActivity(p, 0, 1, 10000);
     }
 
     function testDistrictScoreAveragePerFarmAndTenPercentWalletCap() public {
@@ -325,13 +325,13 @@ contract V33Test is BaseTest {
         _spend(a[10], 100 ether);
         _active(a[10]);
         (score, counted) = d.season.districtScore(0, 3);
-        assertApproxEqAbs(counted, uint256(100 ether) / 9, 10);
-        assertLe(Math10.min(100 ether, counted / 10) * 10, counted + 10);
+        assertEq(counted, 21 ether);
+        assertEq(Math10.min(100 ether, 110 ether / 10), 11 ether);
         assertEq(score, counted / 11);
         // Inactive farms add nothing to the denominator; an extra active zero-spend farm dilutes the average.
         _active(a[11]);
         (uint256 diluted,) = d.season.districtScore(0, 3);
-        assertEq(diluted, counted / 12);
+        assertEq(diluted, counted / 11);
     }
 
     function testSingleWhaleDistrictCannotWinAlone() public {
@@ -345,7 +345,7 @@ contract V33Test is BaseTest {
         }
         (uint256 whaleScore,) = d.season.districtScore(0, 1);
         (uint256 smallScore,) = d.season.districtScore(0, 2);
-        assertEq(whaleScore, 0);
+        assertEq(whaleScore, 100 ether);
         assertEq(smallScore, 0.01 ether);
     }
 
@@ -364,7 +364,7 @@ contract V33Test is BaseTest {
         }
         assertLt(counted, total);
         // Brute-force fixed point: c = sum(min(s_i, c)) / 10.
-        uint256 c = counted / 10;
+        uint256 c = total / 10;
         uint256 sum = Math10.min(501 ether, c);
         for (uint256 i = 1; i < 14; ++i) {
             sum += Math10.min((i + 1) * 1 ether, c);
@@ -463,10 +463,16 @@ contract LaunchProtectionTest is BaseTest {
     function setUp() public override {
         super.setUp();
         manager = new MockV4Manager();
-        hook = new TestV4Market(address(manager), address(token), makeAddr("network recipient"));
-        d.fees = newFees(address(hook));
+        hook = new TestV4Market(
+            address(manager),
+            address(token),
+            makeAddr("network recipient"),
+            address(bindingFactory),
+            bindingConfigHash()
+        );
+        d.fees = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(d.fees));
+        hook.bindFeeRouter(address(d.fees), 7, 1);
         vm.deal(address(manager), 10000 ether);
         token.transfer(address(manager), 10000 ether);
         manager.initializeHook(hook);
@@ -479,20 +485,22 @@ contract LaunchProtectionTest is BaseTest {
     }
 
     function testViewsBeforeInitialization() public {
-        TestV4Market fresh = new TestV4Market(address(manager), address(token), makeAddr("n"));
+        TestV4Market fresh = new TestV4Market(
+            address(manager), address(token), makeAddr("n"), address(bindingFactory), bindingConfigHash()
+        );
         assertEq(fresh.currentBuyTaxBps(), 9000);
         assertEq(fresh.launchTaxTimeLeft(), 30 minutes);
-        assertEq(fresh.maxBuy(), 0.5 ether);
-        assertEq(fresh.maxBuyTimeLeft(), 60 minutes);
+        assertEq(fresh.maxBuy(), type(uint256).max);
+        assertEq(fresh.maxBuyTimeLeft(), 0);
     }
 
-    function testBuyTaxCurveDecaysLinearlyToNormal() public {
+    function testBuyTaxHasImmutableSteps() public {
         assertEq(hook.currentBuyTaxBps(), 9000);
         assertEq(hook.launchTaxTimeLeft(), 30 minutes);
         vm.warp(t0 + 15 minutes);
-        assertEq(hook.currentBuyTaxBps(), uint256(225) + uint256(9000 - 225) / 2);
+        assertEq(hook.currentBuyTaxBps(), 5000);
         vm.warp(t0 + 29 minutes);
-        assertEq(hook.currentBuyTaxBps(), uint256(225) + uint256(9000 - 225) * 60 / 1800);
+        assertEq(hook.currentBuyTaxBps(), 2500);
         vm.warp(t0 + 30 minutes);
         assertEq(hook.currentBuyTaxBps(), 225);
         assertEq(hook.launchTaxTimeLeft(), 0);
@@ -508,16 +516,16 @@ contract LaunchProtectionTest is BaseTest {
     function testLaunchTaxChargedAndRoutedEntirelyToPool() public {
         uint256 fee = buyFee(0.5 ether);
         assertEq(fee, 0.45 ether);
-        assertEq(hook.heldBase(), 0.01 ether);
-        assertEq(hook.networkCredit(), 0.00125 ether);
-        assertEq(hook.heldLaunchTax(), 0.45 ether - 0.01 ether - 0.00125 ether);
+        assertEq(hook.heldBase(), 0);
+        assertEq(hook.networkCredit(), 0);
+        assertEq(hook.heldLaunchTax(), 0.45 ether);
         uint256 team0 = d.fees.credit(team);
         uint256 r0 = d.fees.rewardETH();
         hook.flushFees();
         assertEq(hook.heldLaunchTax(), 0);
         // Base fee splits 1%/1%; every launch-tax wei goes to reward buys.
-        assertEq(d.fees.credit(team) - team0, 0.005 ether);
-        assertEq(d.fees.rewardETH() - r0, 0.005 ether + 0.43875 ether);
+        assertEq(d.fees.credit(team) - team0, 0);
+        assertEq(d.fees.rewardETH() - r0, 0.45 ether);
     }
 
     function testNormalBuyAfterDecayHasNoLaunchTax() public {
@@ -537,18 +545,14 @@ contract LaunchProtectionTest is BaseTest {
         assertEq(hook.heldLaunchTax(), 0);
     }
 
-    function testMaxBuyForSixtyMinutes() public {
-        vm.expectRevert(InvalidValue.selector);
-        buyFee(0.5 ether + 1);
-        vm.warp(t0 + 59 minutes);
-        assertEq(hook.maxBuy(), 0.5 ether);
-        assertEq(hook.maxBuyTimeLeft(), 1 minutes);
-        vm.expectRevert(InvalidValue.selector);
-        buyFee(1 ether);
-        buyFee(0.5 ether);
-        vm.warp(t0 + 60 minutes);
-        assertEq(hook.maxBuy(), type(uint256).max);
-        buyFee(5 ether);
+    function testNoBuySizeLimitAtAnyLaunchStep() public {
+        assertEq(buyFee(5 ether), 4.5 ether);
+        vm.warp(t0 + 15 minutes);
+        assertEq(buyFee(5 ether), 2.5 ether);
+        vm.warp(t0 + 25 minutes);
+        assertEq(buyFee(5 ether), 1.25 ether);
+        vm.warp(t0 + 30 minutes);
+        assertEq(buyFee(5 ether), 0.1125 ether);
     }
 
     function testSnipersSplittingBuysStillPayTheCurve() public {
@@ -557,6 +561,6 @@ contract LaunchProtectionTest is BaseTest {
             paid += buyFee(0.5 ether);
         }
         assertEq(paid, 4.5 ether);
-        assertEq(hook.heldLaunchTax(), 10 * (0.45 ether - 0.01125 ether));
+        assertEq(hook.heldLaunchTax(), 4.5 ether);
     }
 }

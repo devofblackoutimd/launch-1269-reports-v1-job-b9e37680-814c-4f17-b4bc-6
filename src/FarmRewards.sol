@@ -21,7 +21,8 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     struct Epoch {
         uint64 start;
         uint64 end;
-        uint256 raw; // Committed full-health allocation hash, fixed at epoch start.
+        uint256 raw; // Committed hash-time, including pro-rata first-entry snapshots.
+        uint256 miningSeconds; // No emission for the empty prefix of an epoch.
         uint256 budget;
         uint256 mining;
         uint256 redis;
@@ -85,6 +86,9 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     mapping(address => Account) private accounts;
     /// @notice Committed hash that leaves the denominator when epoch `id` starts.
     mapping(uint256 => uint256) public expiring;
+    mapping(uint256 => mapping(address => uint256)) public entryWeight;
+    mapping(uint256 => mapping(address => uint256)) public entrySeconds;
+    event MiningStarted(address indexed player, uint256 indexed epoch, uint256 secondsLeft, uint256 weight);
     event Committed(address indexed player, uint256 weight, uint256 fromEpoch, uint256 expiresAt);
     event Expired(uint256 indexed epoch, uint256 hash);
     event EpochStarted(uint256 indexed epoch, uint256 start, uint256 end, address caller);
@@ -159,7 +163,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
             uint256 week = (old.start - launchTime()) / 7 days;
             lastEpochInWeek[week] = epoch;
             if (old.raw != 0) {
-                old.mining = pool().available() * old.emission / 40000;
+                old.mining = Math.mulDiv(pool().available(), old.emission * old.miningSeconds, 40000 * EPOCH);
                 // 110% Green gross + 5% referral + 1% season = 116.5% maximum, before tariff.
                 old.budget = old.mining * 117 / 100;
                 pool().reserve(old.budget);
@@ -192,6 +196,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
             emit Expired(epoch, gone);
         }
         e.raw = nextTotalHash;
+        if (e.raw != 0) e.miningSeconds = EPOCH;
         e.target = params().get(Params.Key.DemandTarget) * 6;
         e.tariff = params().get(Params.Key.TariffBps);
         e.emission = params().get(Params.Key.EmissionBps);
@@ -254,8 +259,24 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         emit Committed(p, weight, epoch + 1, expiry);
     }
 
+    /// @notice Admit a farm's first productive snapshot immediately, weighted by remaining epoch time.
+    /// Later loadout changes retain the existing next-epoch rule; a wallet cannot replace this snapshot.
+    function beginMining(address p, uint256 weight) external onlyCore returns (bool) {
+        if (!live() || weight == 0 || farmWeight(p, epoch) != 0 || entrySeconds[epoch][p] != 0) return false;
+        uint256 secondsLeft = epochs[epoch].end - block.timestamp;
+        uint256 weighted = Math.mulDiv(weight, secondsLeft, EPOCH);
+        if (weighted == 0) return false;
+        if (epochs[epoch].raw == 0) epochs[epoch].miningSeconds = secondsLeft;
+        entryWeight[epoch][p] = weighted;
+        entrySeconds[epoch][p] = secondsLeft;
+        epochs[epoch].raw += weighted;
+        emit MiningStarted(p, epoch, secondsLeft, weighted);
+        return true;
+    }
+
     /// @notice Weight counted in epoch `e`'s denominator; zero once the farm has been idle for IDLE_EPOCHS.
     function farmWeight(address p, uint256 e) public view returns (uint256) {
+        if (entrySeconds[e][p] != 0) return entryWeight[e][p];
         Account storage a = accounts[p];
         if (e >= a.weightEpoch) return e < a.nextExpiry ? a.nextWeight : 0;
         return e < a.weightExpiry ? a.weight : 0;
@@ -300,8 +321,20 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     function _settleOne(address p, uint256 id) private {
         Epoch storage e = epochs[id];
         (uint256 raw, uint256 productive, uint256 power) = core().process(p, id);
-        uint256 weight = farmWeight(p, id);
         bool audit = e.kind == GridOperator.Kind.Audit && raw > e.auditThreshold;
+        uint256 weight = farmWeight(p, id);
+        uint256 secondsLeft = entrySeconds[id][p];
+        if (secondsLeft != 0) {
+            raw = Math.mulDiv(raw, secondsLeft, EPOCH);
+            productive = Math.mulDiv(productive, secondsLeft, EPOCH);
+            power = Math.mulDiv(power, secondsLeft, EPOCH);
+            // Integer hash-time rounding must retain the same envelope as the reservation formula.
+            uint256 limit = weight * 11000 / 10000;
+            if (productive > limit) {
+                power = Math.mulDiv(power, limit, productive);
+                productive = limit;
+            }
+        }
         shares[id][p] = Share(raw, productive, power, audit);
         uint256 week = (e.start - launchTime()) / 7 days;
         if (weight != 0) {
@@ -348,7 +381,7 @@ contract FarmRewards is GameModule, ReentrancyGuard {
                 if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(e.seed, p, "supply"))) % 10000 < 500) {
                     core().grantDrop(p, keccak256(abi.encode(e.seed, p, "item")));
                 }
-                season().recordActivity(p, week, gross);
+                season().recordActivity(p, week, gross, weight);
             }
         }
         // Only a complete week's yield may compete for spend/yield prizes; partial settlement cannot win.

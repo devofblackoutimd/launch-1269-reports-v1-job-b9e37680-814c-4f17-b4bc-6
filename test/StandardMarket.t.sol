@@ -7,7 +7,9 @@ import {MockV4Manager} from "./mocks/MockV4Manager.sol";
 import {SwapParams} from "../src/interfaces/IV4.sol";
 
 contract TestStandardMarket is StandardMarket {
-    constructor(address m, address t, address n) StandardMarket(m, t, n, 0, 60) {}
+    constructor(address m, address t, address n, address f, bytes32 c)
+        StandardMarket(m, t, n, 0, 60, msg.sender, f, c)
+    {}
     function _validateHookAddress() internal pure override {}
 }
 
@@ -21,10 +23,12 @@ contract StandardMarketTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("standard network");
-        hook = new TestStandardMarket(address(manager), address(token), network);
-        fees = newFees(address(hook));
+        hook = new TestStandardMarket(
+            address(manager), address(token), network, address(bindingFactory), bindingConfigHash()
+        );
+        fees = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(fees));
+        hook.bindFeeRouter(address(fees), 7, 1);
         vm.deal(address(manager), 1000 ether);
         token.transfer(address(manager), 1000 ether);
         manager.initializeHook(hook);

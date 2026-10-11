@@ -14,7 +14,7 @@ class RegulatorTest(unittest.TestCase):
         s=r.example();s.update(availableTokens=20_000_000,medianPaybackDays=8,weeklyEventLossBps=200)
         self.assertEqual(r.propose(s)['proposals'],[])
     def test_holding_pace_keeps_daily_emission_response(self):
-        s=r.example();s.update(availableTokens=20_000_000,pacePolicy='hold')
+        s=r.example();s.update(availableTokens=20_000_000,pacePolicy='hold',packSales7DaysETH=[1,1,1,1,2,2,2])
         changes={x['key']:x['proposed'] for x in r.propose(s)['proposals']}
         self.assertNotIn('DemandTarget',changes);self.assertGreater(changes['EmissionBps'],350)
     def test_empty_pool_is_not_infinite_runway(self):

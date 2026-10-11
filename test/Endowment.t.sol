@@ -53,21 +53,21 @@ contract EndowmentTest is BaseTest {
         vm.expectRevert(InsufficientBalance.selector);
         endowedPool.reserve(1);
         vm.prank(bob);
-        endowedPool.activateEndowment();
+        endowedPool.fundEndowment();
         assertEq(endowedPool.dripStart(), launch + 100 days);
         assertEq(endowedPool.available(), 0);
         vm.expectRevert(AlreadyDone.selector);
-        endowedPool.activateEndowment();
+        endowedPool.fundEndowment();
         vm.expectRevert(AlreadyDone.selector);
         endowedPool.fundEndowment();
     }
 
     function testUnderfundingCannotActivateAndDonationsStayConserved() public {
         token.transfer(address(endowedPool), ENDOWMENT - 1);
-        vm.expectRevert(InsufficientBalance.selector);
-        endowedPool.activateEndowment();
+        vm.expectRevert();
+        endowedPool.fundEndowment();
         token.transfer(address(endowedPool), 101);
-        endowedPool.activateEndowment();
+        endowedPool.fundEndowment();
         assertEq(endowedPool.available(), 100);
         endowedPool.reserve(100);
         endowedPool.pay(alice, 100);

@@ -84,7 +84,7 @@ contract Params {
             3000,
             4000,
             0.5 ether,
-            300,
+            150,
             500,
             400,
             5000,
@@ -136,7 +136,7 @@ contract Params {
         if (k == Key.MythicSetBps) return (1500, 3000);
         if (k == Key.SetCapBps) return (3000, 4000);
         if (k == Key.BuyBatch) return (0.1 ether, 1 ether);
-        if (k == Key.SlippageBps) return (250, 500);
+        if (k == Key.SlippageBps) return (10, 150);
         if (k == Key.SellHourBps) return (200, 600);
         if (k == Key.SellDayBps) return (100, 500);
         if (k == Key.SellDeviationBps) return (2000, 5000);

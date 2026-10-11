@@ -116,6 +116,18 @@ contract InvariantsTest is BaseTest {
         assertLe(d.fees.heartbeatBalance(), 1 ether);
     }
 
+    function invariantReceiptsNeverForfeitOrFixMissingEntropy() public view {
+        for (uint256 id = 1; id < d.packs.nextId(); ++id) {
+            (address p,, uint256 count, uint256 opened,,, bytes32 seed, bool fixedSeed, bool expired) =
+                d.packs.commits(id);
+            assertTrue(p != address(0));
+            assertLe(opened, count);
+            assertFalse(expired);
+            if (opened != 0) assertTrue(fixedSeed);
+            if (fixedSeed) assertTrue(seed != bytes32(0));
+        }
+    }
+
     function invariantPriceAndParamsBounds() public view {
         assertGe(d.packs.price(), d.params.get(Params.Key.PriceFloor));
         assertLe(d.packs.price(), d.params.get(Params.Key.PriceCeiling));

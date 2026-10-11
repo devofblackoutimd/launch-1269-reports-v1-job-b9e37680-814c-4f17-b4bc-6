@@ -121,14 +121,17 @@ contract BountiesTest is BaseTest {
         uint256 first = d.fees.credit(keeper);
         assertGt(first, 0);
         assertLe(first, d.params.get(Params.Key.BuyBounty) / 2);
+        vm.warp(block.timestamp + 5 minutes);
         vm.prank(keeper);
         d.fees.executeBuys(0.25 ether, q / 2);
         uint256 paid = d.fees.credit(keeper);
         assertGt(paid, first);
         assertLe(paid - first, d.params.get(Params.Key.BuyBounty) / 2);
         assertLe(paid, d.params.get(Params.Key.BuyBounty));
+        uint256 dustQuote = market.quote(1);
+        vm.expectRevert(InvalidValue.selector);
         vm.prank(keeper);
-        d.fees.executeBuys(1, market.quote(1));
+        d.fees.executeBuys(1, dustQuote);
         assertEq(d.fees.credit(keeper), paid);
         vm.expectRevert(InvalidValue.selector);
         vm.prank(keeper);
@@ -139,8 +142,8 @@ contract BountiesTest is BaseTest {
     function testOnlyFinalizePaidOnceAndEmptyWeekUnpaid() public {
         vm.mockCall(address(d.rewards), abi.encodeCall(d.rewards.seasonReady, (0)), abi.encode(true));
         vm.startPrank(address(d.rewards));
-        d.season.recordActivity(alice, 0, 10 ether);
-        d.season.recordActivity(bob, 0, 20 ether);
+        d.season.recordActivity(alice, 0, 10 ether, 10000);
+        d.season.recordActivity(bob, 0, 20 ether, 10000);
         d.season.complete(alice, 0);
         d.season.complete(bob, 0);
         vm.stopPrank();

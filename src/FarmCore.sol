@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {RewardPool} from "./RewardPool.sol";
 import {FarmEngine} from "./FarmEngine.sol";
 import {FarmItems} from "./FarmItems.sol";
 import {Params} from "./Params.sol";
@@ -284,6 +285,11 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         f.loadout[room * 6 + slot] = id;
         items().equip(msg.sender, id);
         _sync(msg.sender);
+        if (rewards().beginMining(msg.sender, engine().allocationHash(f.loadout, f.paid != 0))) {
+            // Freeze the first installed loadout for this epoch; later edits apply next epoch.
+            f.activeEpoch = 0;
+            _roll(msg.sender, rewards().epoch());
+        }
         emit Placed(msg.sender, id, room, slot);
     }
 
@@ -331,6 +337,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
             uint256 before_ = token().balanceOf(pool());
             token().safeTransferFrom(p, pool(), paid);
             if (token().balanceOf(pool()) - before_ != paid) revert InvalidValue();
+            RewardPool(pool()).recordInflow(paid);
         } else {
             paid = rewards().spend(p, nominal);
         }

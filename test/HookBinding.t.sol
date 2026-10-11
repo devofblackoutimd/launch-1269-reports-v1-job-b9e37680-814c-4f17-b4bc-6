@@ -35,7 +35,7 @@ contract HookBindingTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("network");
-        hook = new TestV4Market(address(manager), address(token), network);
+        hook = new TestV4Market(address(manager), address(token), network, address(bindingFactory), bindingConfigHash());
         vm.deal(address(manager), 100 ether);
         manager.initializeHook(hook);
         vm.warp(vm.getBlockTimestamp() + 60 minutes); // past the v3.3 launch tax and max-buy window
@@ -64,16 +64,14 @@ contract HookBindingTest is BaseTest {
         assertEq(address(hook).balance, base + surcharge + networkDue);
         vm.expectRevert(NotConfigured.selector);
         hook.flushFees();
-        FeeRouter f = newFees(address(hook));
-        vm.expectRevert(Unauthorized.selector);
-        hook.bindFeeRouter(address(f));
+        FeeRouter f = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(f));
+        hook.bindFeeRouter(address(f), 7, 1);
         assertEq(address(hook.fees()), address(f));
         assertEq(address(hook.params()), address(d.params));
         vm.expectRevert(AlreadyDone.selector);
         vm.prank(team);
-        hook.bindFeeRouter(address(f));
+        hook.bindFeeRouter(address(f), 7, 1);
         vm.prank(bob);
         hook.flushFees();
         assertEq(hook.heldBase(), 0);
@@ -94,23 +92,23 @@ contract HookBindingTest is BaseTest {
     function testWrongRouterAndMissingCodeRejectedBeforePermanentBind() public {
         vm.expectRevert(InvalidAddress.selector);
         vm.prank(team);
-        hook.bindFeeRouter(alice);
-        vm.expectRevert(InvalidValue.selector);
+        hook.bindFeeRouter(alice, 7, 1);
+        vm.expectRevert();
         vm.prank(team);
-        hook.bindFeeRouter(address(d.fees));
+        hook.bindFeeRouter(address(d.fees), 7, 1);
         assertEq(address(hook.fees()), address(0));
-        FeeRouter f = newFees(address(hook));
+        FeeRouter f = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(f));
+        hook.bindFeeRouter(address(f), 7, 1);
     }
 
-    function testFlushFailureRestoresEscrowAndDoesNotStopSwaps() public {
+    function testLookAlikeCannotBindEvenWhenTeamCalls() public {
         _buy();
         RejectingHookRouter f = new RejectingHookRouter(address(token), address(hook), address(d.params));
-        vm.prank(team);
-        hook.bindFeeRouter(address(f));
         vm.expectRevert();
-        hook.flushFees();
+        vm.prank(team);
+        hook.bindFeeRouter(address(f), 7, 1);
+        assertEq(address(hook.fees()), address(0));
         assertEq(hook.heldBase(), 0.02 ether);
         _buy();
         assertEq(hook.heldBase(), 0.04 ether);

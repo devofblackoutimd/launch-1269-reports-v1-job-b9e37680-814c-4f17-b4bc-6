@@ -67,16 +67,20 @@ contract FeesParamsTest is BaseTest {
         d.fees.executeBuys(0.5 ether, 0);
         market.setFailure(true);
         vm.expectRevert();
-        d.fees.executeBuys(0.5 ether, q * 97 / 100);
+        d.fees.executeBuys(0.5 ether, q * 985 / 1000);
         assertEq(d.fees.rewardETH(), 1 ether);
         assertEq(d.fees.lastBuy(), 0);
         market.setFailure(false);
-        d.fees.executeBuys(0.5 ether, q * 97 / 100);
+        d.fees.executeBuys(0.5 ether, q * 985 / 1000);
         assertEq(token.balanceOf(address(d.pool)) - bal, q);
         assertEq(d.fees.rewardETH(), 0.5 ether);
-        d.fees.executeBuys(1, market.quote(1));
-        d.fees.depositBaseFee{value: 1}();
-        d.fees.executeBuys(0.5 ether - 1, market.quote(0.5 ether - 1) * 97 / 100);
+        uint256 dustQuote = market.quote(1);
+        vm.expectRevert(InvalidValue.selector);
+        d.fees.executeBuys(1, dustQuote);
+        vm.expectRevert(TooEarly.selector);
+        d.fees.executeBuys(0.5 ether, q);
+        vm.warp(block.timestamp + 5 minutes);
+        d.fees.executeBuys(0.5 ether, q);
     }
 
     function testParamsStepCooldownBoundsAuthorityAndLetter() public {

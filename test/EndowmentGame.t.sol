@@ -18,6 +18,7 @@ contract EndowmentGameTest is BaseTest {
                 1 ether
             )
         );
+        market.configureLaunch(tokenLaunch(), address(d.fees));
         uint256 principal = 250_000_000 ether;
         token.approve(address(d.pool), principal);
         d.pool.fundEndowment();

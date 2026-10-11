@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
-import {BaseTest} from "./Base.t.sol";
+import {DeferredEntryTest} from "./Base.t.sol";
 import {FarmEngine} from "../src/FarmEngine.sol";
 import {FarmCore} from "../src/FarmCore.sol";
 import {FarmItems} from "../src/FarmItems.sol";
 import "../src/lib/Errors.sol";
 
-contract ItemsTest is BaseTest {
+contract ItemsTest is DeferredEntryTest {
     function testSoulboundOnlyOwnFarmAndNoDuplicateTypes() public {
         uint256 gpu = place(alice, 0, 0, 0);
         uint256 another = mintItem(alice, 0, 1);

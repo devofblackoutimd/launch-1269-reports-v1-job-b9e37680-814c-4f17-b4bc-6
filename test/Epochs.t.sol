@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
-import {BaseTest} from "./Base.t.sol";
+import {DeferredEntryTest} from "./Base.t.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import {FarmRewards} from "../src/FarmRewards.sol";
 import "../src/lib/Errors.sol";
 
-contract EpochsTest is BaseTest {
+contract EpochsTest is DeferredEntryTest {
     function testCannotAdvanceEarlyAndBountyOnce() public {
         payPack(alice);
         uint256 h = d.fees.heartbeatBalance();

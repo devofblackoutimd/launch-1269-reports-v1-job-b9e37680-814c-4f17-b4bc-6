@@ -7,6 +7,7 @@ interface IRewards {
     function initialize(address p) external;
     function settle(address p, uint256 limit) external returns (uint256);
     function setWeight(address p, uint256 weight) external;
+    function beginMining(address p, uint256 weight) external returns (bool);
     function epoch() external view returns (uint256);
     function live() external view returns (bool);
     function ready() external view returns (bool);
@@ -38,6 +39,6 @@ interface ICore {
 interface ISeason {
     function complete(address p, uint256 week) external;
     function recordSpend(address p, uint256 ethValue, bool districtSpend) external;
-    function recordActivity(address p, uint256 week, uint256 gross) external;
+    function recordActivity(address p, uint256 week, uint256 gross, uint256 committedHash) external;
     function addPrize(uint256 week, uint256 amount) external;
 }

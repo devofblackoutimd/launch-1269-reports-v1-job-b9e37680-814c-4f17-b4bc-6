@@ -1,54 +1,43 @@
-# BLACKOUT v3.3
+# BLACKOUT v3.4
 
-v3.3 (source only, no deployment): idle farms leave the hash denominator after 12 epochs without an owner action, there are age gates and a 400/day paid-XP cap, merging is removed, the best district is chosen by average spend per active farm with a 10% wallet cap, packs/lobby/surcharge split 88/10/2, and the hook adds launch protection (90%→2.25% buy tax over 30 min, 0.5 ETH max buy for 60 min) with PackSale opening at launch + 60 min. See [report.md](report.md), [docs/review-v33.md](docs/review-v33.md) and the v3.3 section of [docs/launch-v31.md](docs/launch-v31.md). The v3.2 report is now [docs/report-v32.md](docs/report-v32.md).
+Source-only continuation of v3.3. Nothing was deployed, broadcast, or minted. Project: [@IMDBlackout](https://x.com/IMDBlackout), public site: [playblackout.xyz](https://playblackout.xyz).
 
+Paid and starter receipts retain their rarity draws when entropy expires: they re-arm, then capture a fresh future block. The hook accepts initialization only from the immutable official launcher, charges 90% / 50% / 25% buy tax for the first three ten-minute periods, sends **all** of that stepped tax to reward buys, and imposes no buy-size limit. Normal fees and progressive sell surcharges remain unchanged. Packs open at the authenticated hook timestamp plus one hour, only after endowment funding and verified router binding.
 
-Immutable token-endowed mining game on the existing v3 codebase. No deployment, broadcast, token creation/replacement or live spending occurred. Build settings and dependencies are unchanged.
+Binding is permissionless and one-time. The hook pins the application factory and a commitment to the intended game configuration and registry coordinates. It verifies exact registry creation code/address, the registry's hook back-reference, and enrollment of the exact pinned FeeRouter. The hook has no owner or upgrade path. Contracts are not proxies. Only new PackSale purchases may be paused by the swarm, for at most 72 hours, followed by at least 72 live hours; other operations remain callable.
 
-[Report](report.md) contains the endowment comparison, target misses and recommended parameters. [Launch procedure](docs/launch-v31.md) specifies the custom hook followed by two application launches of 8+4 contracts. [Regulator](regulator.md) describes keeper and manual IMD responsibilities. [Fresh review](docs/review-v32.md) records findings and repairs. Historical v3 results are preserved in [docs/report-v3.md](docs/report-v3.md), not the v3.2 economic baseline. The [lazy accounting specification](docs/lazy-accounting-v32.md) defines allocation weights, rounding, catch-up and season deadlines.
+Best-farm prizes require 20 active epochs and rank absolute weekly spend capped at 1 ETH. Lottery tickets accumulate committed hash capped at 100,000 per active epoch and 2.8 million per week. District scoring averages active paying farms only; each wallet contributes at most 10% of that district's uncapped paying spend. Free district packs require positive paid spend in the competition week. Referrals are unchanged.
 
-## Reproduce offline
+A farm's first installed productive snapshot can mine the current epoch for its remaining time. Subsequent edits still apply next epoch. Idle commitments still expire after 12 epochs. The default endowment remains 20% of supply, dripped over 42 days. The regulator proposal now follows a seven-day cash pack-sales trend within existing daily step limits. Simulation compares 42/56 days and reports poor payback outcomes explicitly; this is not a promise of returns.
+
+- [Finding-by-finding report](report.md)
+- [Current launch steps and required parameters](docs/launch-v34.md)
+- [Independent contributor review](docs/review-v34.md)
+- [Simulation results: five seeds per case](artifacts/v34/simulation.md)
+- [Simulation assumptions and limitations](docs/simulation-v34.md)
+- [Entropy keeper and one-click reveal integration](docs/entropy-v34.md)
+- Historical [v3.3 report](docs/report-v33.md), [v3.2 report](docs/report-v32.md)
+
+## Local verification
+
+The existing Foundry configuration and vendored dependencies are unchanged. Solidity is pinned to 0.8.26. No network or environment variables are required for default tests.
 
 ```sh
 forge build
+python3 tools/pin_module_code.py --check
 forge test
 forge fmt --check
-python3 tools/pin_module_code.py --check
-python3 -m unittest discover -s test/python -v
-python3 sim/blackout_sim_v32.py --check
-python3 sim/run_v32.py --output artifacts/v32/verified-baseline
-python3 sim/run_v32.py --levers --output artifacts/v32/verified-sensitivities
-python3 tools/check_v32_results.py
-python3 tools/regulator.py --example
+python3 -m unittest discover -s test/python
+node test/reveal.test.mjs
+python3 sim/run_v34.py
 ```
 
-The compiler is the existing pinned 0.8.26, viaIR, Cancun. Vendored dependencies are ordinary files. No RPC or environment variables are needed by the default suite. The optional Robinhood smoke test skips offline and can be run separately with the explicit public RPC; no live deployment is performed by it.
+After any Solidity implementation change, format first, build, regenerate module pins using `python3 tools/pin_module_code.py`, and rebuild/check. The pins authenticate compiler-specific creation code, including metadata. Do not use stale bytecode or pins. The historical fork test requires a separately supplied RPC and is skipped in offline default execution; real local v4 PoolManager integration runs offline.
 
-## Accounting and authority
+## After launch
 
-The one-time endowment is 100–250 million of the existing billion tokens. The pool locks it before activation and then releases principal linearly over 14–56 days (default 42). Activation fixes the period permanently. Released funds remain subject to ordinary mining reservations and player claims. No donor, owner, team or swarm withdrawal exists.
+This assignment does not authorize a launch. The separately authorized deployer supplies and verifies the token, official PoolManager, launcher, immutable application factory, network recipient, swarm role, starter root/snapshot and reserved deployment coordinates. No address is guessed. There are no owner setters for these immutable security identities; freeze the accepted configuration before deployment. Publish all predictions, compiled hashes and the binding commitment.
 
-Ten modules use a permanent `GameRegistry`. Anyone can register exact, compiler-pinned module bytecode deployed with that registry constructor argument by the verified application factory; each role is write-once. There is no replaceable implementation, delegatecall or upgrade. Constructors make no external calls. `Params(swarmWallet,initialHeartbeatBps,initialHeartbeatCapWei)` allows only bounded numeric changes after deployment, with 10% maximum movement per key per 24 hours and a public letter.
+Use the predicted RewardPool as `remainderTo`. After actual token delivery, anyone calls `fundEndowment()` to account for the transferred principal and freeze its drip schedule. Ordinary donations, core spending and buybacks cannot substitute for that principal. The permissionless funding fallback transfers only missing principal with exact approval. See the launch guide for platform prediction dependencies and the public fallback procedure if predeployment allocation is unavailable.
 
-The custom hook is a standalone five-argument source at `launch/V4Market.sol`. It escrows ETH fees before the game exists. Only the fixed team address `0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007` may bind FeeRouter, once. Flushing fees afterward is permissionless. This is the hook's only privileged action. Network and project credits remain separate.
-
-Only new paid purchases in PackSale may be paused by the swarm, at most 72 hours per pause, with automatic timestamp expiry and a 72 hour live interval before another pause. Existing pack resolutions, claims, withdrawals, epoch advancement and all keeper work remain callable.
-
-Keepers earn pull credits only for epoch advancement, entropy, buyback and season finalization. Lazy farm settlement and scoring have no bounty. The launch heartbeat share is 2%, with a fixed 1 ETH cap and excess routed into reward buys. Measured gas reimbursement has a 25% margin, a gas-price ceiling, per-unit hard caps and a heartbeat-balance cap. Empty/replayed work earns nothing. ETH cannot directly buy IMD heartbeat runs; an external payer tops those up and public bots monitor fast entropy deadlines.
-
-## Client sequence
-
-1. Anyone calls `FarmRewards.advanceEpoch()` at launch, then at/after each six-hour end. It closes at most one epoch and starts the next at the call time; gaps do not earn mining. Advancement never waits for farms. Anyone can call `settle(player,1..8)` to persist bounded catch-up; Core actions require their owner to be caught up, otherwise revert `CatchUpRequired`. Claim can withdraw after a partial batch.
-2. Buy `PackSale.openPack(n)` with exactly `quote(n)` ETH. There are no wallet, daily, token-pack or total sales caps. Resolve after native block N+2 using `resolve(id,1..8)`, making room for three items per pack. A large receipt can be opened over multiple calls.
-3. Equip `FarmCore.place(id,room,slot)`, with zero-based room 0–3 and slot 0–5. Each room accepts any types without duplicates. Query `roomUnlocked(player,index)` for each independent gate; paid XP can unlock a later room before the age-gated room, so the unlocked count is not a contiguous prefix. Approvals are unnecessary and disabled: Core alone moves items between a player and that player's farm.
-4. Loadout, ordinary repairs, overclock and paid-account status are snapshotted per epoch; changes take effect for the next epoch. Cable repair restores only the remaining portion of an ongoing theft epoch. Equip or buy before the first active epoch to establish a farm.
-5. Spend with Core's `buyTokenPack`, `repair`, `repairCable`, `overclock`, `expand`, `merge`, or `lobby`. `wallet=true` uses approved ERC-20; `false` uses internal rewards with 5% additional purchasing power. Every consumed token goes to the pool. Electricity is automatically recycled from mining.
-6. `FarmRewards.claim(amount)` auto-settles up to eight closed epochs and withdraws credited rewards, subject to their original epoch-end age tax. Read `pending` after explicit catch-up when claiming the entire balance. Full inventory does not stop mining or pull payments. `scrap(id,minimum)` permits an unequipped, unlocked item exit with a slippage-protected, allowance-capped reward.
-7. Resolve supply drops and weekly entitlements when inventory has space. Settle the entire week before week-end + seven days to enter. After this deadline `Season.prepare(week,1..64)` is constant and unpaid, and `finalize(week)` is bounded and permissionless; expired lottery entropy requires `rearm(week)` and a new future block, rather than a predictable prize seed.
-
-Snapshot tooling is retained: `python3 tools/starter_merkle.py owners.csv --snapshot-block BLOCK --collection ADDRESS`. Leaves are `keccak256(abi.encode(uint256 tokenId,address holder))`, with sorted pairs. This attests snapshot ownership; it does not bridge collection state on demand. Publish the actual collection identity and snapshot provenance with the root.
-
-
-All future launch addresses, snapshot data, chain contracts and swarm role come from the accepted launch configuration. Follow the exact verification, binding and public team-to-pool transfer steps in [launch-v31.md](docs/launch-v31.md). No test identities or guessed production addresses are supplied. Future-block randomness retains the v3 sequencer influence and timeout limitations; it is not a VRF.
-
-Historical v3.1 report and review remain in `docs/report-v31.md` and `docs/review-v31.md`. Their 31% / 4.5 ETH recommendation and per-farm keeper loop are superseded.
+Anyone may enroll modules, bind the intended router, flush escrow, advance epochs, capture/re-arm entropy, settle farms, execute bounded buybacks and finalize seasons. The public keeper follows native blocks every two seconds; an occasional policy job is insufficient for a 256-block entropy window. The swarm proposes numeric policy and funds any external scheduling service from its own resources; heartbeat ETH has no administrative exit. Future blockhash randomness remains sequencer-influenced, as in v3.3; it is not VRF randomness.

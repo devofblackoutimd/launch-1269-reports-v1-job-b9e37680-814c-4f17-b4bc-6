@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {ILaunchHook} from "./interfaces/ILaunchHook.sol";
 import {IGameRegistry} from "./interfaces/IGameRegistry.sol";
 import {ModuleCode} from "./lib/ModuleCode.sol";
 import "./lib/Errors.sol";
@@ -16,7 +17,7 @@ contract GameRegistry is IGameRegistry {
     address public immutable token;
     address public immutable params;
     address public immutable market;
-    uint256 public immutable launchTime;
+
     bytes32 public immutable starterRoot;
     uint256 public immutable snapshotBlock;
     uint256 public immutable endowment;
@@ -29,7 +30,6 @@ contract GameRegistry is IGameRegistry {
         address token_,
         address params_,
         address market_,
-        uint256 launch_,
         bytes32 root_,
         uint256 snapshot_,
         uint256 endowment_,
@@ -37,16 +37,21 @@ contract GameRegistry is IGameRegistry {
     ) {
         if (
             token_ == address(0) || params_ == address(0) || market_ == address(0) || factory_ == address(0)
-                || launch_ == 0 || root_ == bytes32(0) || snapshot_ == 0 || endowment_ > 250_000_000 ether
+                || root_ == bytes32(0) || snapshot_ == 0 || endowment_ > 250_000_000 ether
         ) revert InvalidValue();
         token = token_;
         params = params_;
         market = market_;
-        launchTime = launch_;
         starterRoot = root_;
         snapshotBlock = snapshot_;
         endowment = endowment_;
         factory = IApplicationFactory(factory_);
+    }
+
+    function launchTime() external view returns (uint256) {
+        uint256 t = ILaunchHook(market).initializedAt();
+        if (t == 0) revert NotConfigured();
+        return t;
     }
 
     function module(uint256 role) external view returns (address result) {
@@ -72,8 +77,7 @@ contract GameRegistry is IGameRegistry {
             revert InvalidValue();
         }
         if (modules[role] != address(0)) revert AlreadyDone();
-        deployed =
-            factory.predictContract(launchNumber, index, abi.encodePacked(creationCode, abi.encode(address(this))));
+        deployed = factory.predictContract(launchNumber, index, bytes.concat(creationCode, abi.encode(address(this))));
         if (deployed.code.length == 0) revert NotConfigured();
         modules[role] = deployed;
         registered++;

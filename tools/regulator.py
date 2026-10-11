@@ -4,6 +4,15 @@ import argparse, json, math
 from pathlib import Path
 BOUNDS={'EmissionBps':(200,600),'TariffBps':(1000,3000),'DemandTarget':(10,40),'PositiveWeight':(2000,5000)}
 
+def inflow_emission(current, history, runway=100):
+    if len(history)!=7 or any(not math.isfinite(x) or x<0 for x in history):
+        raise ValueError('provide seven completed nonnegative daily pack ETH totals')
+    early=sum(history[:3]);late=sum(history[-3:])
+    ratio=late/early if early else (1. if late==0 else 600/350)
+    target=200 if sum(history)==0 else max(200,min(600,math.floor(350*ratio)))
+    if runway<14:target=min(target,math.ceil(current*.9))
+    return max(200,current-current//10,min(600,current+current//10,target))
+
 def propose(state):
     now=state['timestamp'];values=state['params'];last=state['lastChanged'];pool=state['availableTokens'];daily=state['dailyOutflowTokens']
     if pool<0 or daily<0: raise ValueError('token balances and outflow must be nonnegative')
@@ -28,6 +37,14 @@ def propose(state):
     if loss>800:
         desired['PositiveWeight']=math.floor(values['PositiveWeight']*1.1)
         reason.append('Event losses approach ten percent: favor positive events and reduce severity.')
+    # Seven completed UTC days, ETH actually paid for packs. Token recycling is not fresh inflow.
+    if 'packSales7DaysETH' in state:
+        history=state['packSales7DaysETH']
+        desired['EmissionBps']=inflow_emission(values['EmissionBps'],history,runway)
+        reason.append('Emission follows the last-three/first-three-day pack inflow ratio within a seven-day window; daily movement is bounded.')
+    else:
+        desired['EmissionBps']=min(desired['EmissionBps'], values['EmissionBps'])
+        reason.append('No complete seven-day cash history supplied: do not raise emission.')
     output=[]
     for key,(low,high) in BOUNDS.items():
         old=values[key];step=old//10;next_=max(low,old-step,min(high,old+step,desired[key]))

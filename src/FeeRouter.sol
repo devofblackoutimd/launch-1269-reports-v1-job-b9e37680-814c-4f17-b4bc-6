@@ -4,6 +4,7 @@ import {GameModule} from "./lib/GameModule.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Params} from "./Params.sol";
+import {RewardPool} from "./RewardPool.sol";
 import {IMarket} from "./interfaces/Interfaces.sol";
 import "./lib/Errors.sol";
 
@@ -18,6 +19,9 @@ contract FeeRouter is GameModule, ReentrancyGuard {
     uint256 public rewardETH;
     uint256 public heartbeatBalance;
     uint256 public lastBuy;
+    uint256 public constant MIN_BUY_AMOUNT = 0.05 ether;
+    uint256 public constant MIN_BUY_INTERVAL = 5 minutes;
+    uint256 public constant MAX_SLIPPAGE_BPS = 150;
     mapping(address => uint256) public credit;
     event Routed(uint8 indexed stream, uint256 amount);
     event Bought(uint256 ethAmount, uint256 tokenAmount);
@@ -94,7 +98,7 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         _route(3);
     }
 
-    /// @notice Launch-window buy tax above the normal fee: 100% to reward buys, no team or heartbeat share.
+    /// @notice Entire launch-window stepped buy tax: 100% to reward buys, no team or heartbeat share.
     function depositLaunchTax() external payable {
         if (msg.sender != address(market())) revert Unauthorized();
         if (msg.value == 0) revert InvalidValue();
@@ -164,7 +168,11 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         if (ethAmount == 0 || ethAmount > params().get(Params.Key.BuyBatch) || ethAmount > rewardETH) {
             revert InvalidValue();
         }
+        uint256 minimum = rewardETH < MIN_BUY_AMOUNT ? rewardETH : MIN_BUY_AMOUNT;
+        if (ethAmount < minimum) revert InvalidValue();
+        if (lastBuy != 0 && block.timestamp < lastBuy + MIN_BUY_INTERVAL) revert TooEarly();
         uint256 q = market().quote(ethAmount);
+        if (params().get(Params.Key.SlippageBps) > MAX_SLIPPAGE_BPS) revert InvalidValue();
         if (q == 0 || minOut == 0 || minOut < q * (10000 - params().get(Params.Key.SlippageBps)) / 10000) {
             revert InvalidValue();
         }
@@ -174,6 +182,7 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         market().buy{value: ethAmount}(minOut, rewardPool());
         received = token().balanceOf(rewardPool()) - before_;
         if (received < minOut) revert InsufficientBalance();
+        if (!RewardPool(rewardPool()).endowed()) RewardPool(rewardPool()).recordInflow(received);
         // The aggregate cap is proportional to ETH bought, even when a caller splits a buy.
         uint256 bounty = params().get(Params.Key.BuyBounty) * ethAmount / params().get(Params.Key.BuyBatch);
         uint256 paid = _creditBounty(msg.sender, _workAmount(bounty, startGas - gasleft()));

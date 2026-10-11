@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {Test} from "forge-std/Test.sol";
+import {GameRegistry} from "../src/GameRegistry.sol";
+import {RewardPool} from "../src/RewardPool.sol";
+import {LocalApplicationFactory} from "../script/Deploy.s.sol";
 import {Deploy} from "../script/Deploy.s.sol";
 import {MockToken} from "./mocks/MockToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {FarmCore} from "../src/FarmCore.sol";
 import {FarmItems} from "../src/FarmItems.sol";
+import {PackSale} from "../src/PackSale.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockGameRegistry} from "./mocks/MockGameRegistry.sol";
 import {Params} from "../src/Params.sol";
@@ -15,6 +19,7 @@ import "../src/lib/Errors.sol";
 abstract contract BaseTest is Test {
     Deploy.Deployment internal d;
     Deploy internal deployment;
+    LocalApplicationFactory internal bindingFactory;
     MockToken internal token;
     MockMarket internal market;
     address internal alice;
@@ -34,6 +39,8 @@ abstract contract BaseTest is Test {
         team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
         token = new MockToken();
         market = new MockMarket(address(token));
+        market.configureLaunch(launch - 1 hours, address(this));
+        bindingFactory = new LocalApplicationFactory();
         token.transfer(address(market), 100_000_000 ether);
         address fixture = makeAddr("deployment script fixture");
         vm.etch(fixture, vm.getDeployedCode("Deploy.s.sol:Deploy"));
@@ -51,6 +58,9 @@ abstract contract BaseTest is Test {
                 1 ether
             )
         );
+        market.configureLaunch(launch - 1 hours, address(d.fees));
+        // Zero-endowment accounting fixtures explicitly mock only the purchase readiness flag.
+        vm.mockCall(address(d.pool), abi.encodeWithSignature("endowed()"), abi.encode(true));
         vm.deal(alice, 10000 ether);
         vm.deal(bob, 10000 ether);
         vm.deal(address(this), 10000 ether);
@@ -104,6 +114,59 @@ abstract contract BaseTest is Test {
         for (uint256 i; i < 10; ++i) {
             r.setModule(i, a[i]);
         }
+    }
+
+    function bindingConfigHash() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                address(d.params),
+                keccak256(abi.encode(uint256(17), alice)),
+                uint256(23_000_000),
+                uint256(0),
+                uint64(7),
+                uint256(1)
+            )
+        );
+    }
+
+    function canonicalFees(address hook_) internal returns (FeeRouter f) {
+        bytes memory code = bytes.concat(
+            type(GameRegistry).creationCode,
+            abi.encode(
+                address(token),
+                address(d.params),
+                hook_,
+                keccak256(abi.encode(uint256(17), alice)),
+                uint256(23_000_000),
+                uint256(0),
+                address(bindingFactory)
+            )
+        );
+        GameRegistry r = GameRegistry(bindingFactory.deploy(7, 1, code));
+        string[10] memory names = [
+            "RewardPool",
+            "FarmRewards",
+            "FarmCore",
+            "FarmItems",
+            "PackSale",
+            "StarterClaim",
+            "FeeRouter",
+            "GridOperator",
+            "Season",
+            "FarmEngine"
+        ];
+        for (uint256 i; i < 10; ++i) {
+            bytes memory creation = vm.getCode(string.concat(names[i], ".sol:", names[i]));
+            uint64 launchNumber = i < 6 ? 8 : 9;
+            uint256 idx = i < 6 ? i : i - 6;
+            bindingFactory.deploy(launchNumber, idx, bytes.concat(creation, abi.encode(address(r))));
+            r.register(i, launchNumber, idx, creation);
+        }
+        d.pool = RewardPool(r.module(0));
+        // Hook tests use these identities for authorized fee streams, without purchasing farm items.
+        d.packs = PackSale(r.module(4));
+        d.grid = GridOperator(r.module(7));
+        f = FeeRouter(payable(r.module(6)));
     }
 
     function newFees(address market_) internal returns (FeeRouter f) {
@@ -164,5 +227,15 @@ abstract contract BaseTest is Test {
     function resolvePack(uint256 id) internal {
         entropy();
         d.packs.resolve(id, 1);
+    }
+}
+
+/// @dev Established-farm snapshot fixtures used by legacy event/accounting unit tests.
+/// Suppress only the first-entry admission shortcut; all normal epoch processing is real.
+/// V34 and invariant tests inherit BaseTest and exercise live admission without this mock.
+abstract contract DeferredEntryTest is BaseTest {
+    function setUp() public virtual override {
+        super.setUp();
+        vm.mockCall(address(d.rewards), abi.encodeWithSignature("beginMining(address,uint256)"), abi.encode(false));
     }
 }

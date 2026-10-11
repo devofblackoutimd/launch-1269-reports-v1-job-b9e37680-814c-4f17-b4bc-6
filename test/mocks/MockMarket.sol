@@ -5,6 +5,13 @@ import {IMarket} from "../../src/interfaces/Interfaces.sol";
 
 contract MockMarket is IMarket {
     IERC20 public token;
+    uint256 public initializedAt;
+    address public fees;
+
+    function configureLaunch(uint256 t, address f) external {
+        initializedAt = t;
+        fees = f;
+    }
     uint256 public rate = 1_000_000 ether;
     bool public fail;
     uint256 public fillBps = 10000;

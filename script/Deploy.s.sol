@@ -99,7 +99,6 @@ contract Deploy is Script {
                         c.token,
                         address(d.params),
                         c.market,
-                        c.launchTime,
                         c.starterRoot,
                         c.snapshotBlock,
                         1_000_000_000 ether * c.endowmentBps / 10000,

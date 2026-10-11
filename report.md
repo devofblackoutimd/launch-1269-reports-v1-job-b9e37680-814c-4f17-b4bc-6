@@ -1,107 +1,58 @@
-# BLACKOUT v3.3 report — no deployment
+# BLACKOUT v3.4 — implementation and review report
 
-v3.3 changes the v3.2 contracts from job 9c938888 in source only. Nothing was deployed, and the token was not touched. Everything not listed below is the same as in v3.2: lazy accounting, 2% heartbeat with a 1 ETH cap, 20% endowment (poolBps 7000), 42-day drip, the one-time FeeRouter bind, the two launches (8+4) with GameRegistry, and the team address `0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007`. The v3.2 report is in [docs/report-v32.md](docs/report-v32.md). The launch steps are in [docs/launch-v31.md](docs/launch-v31.md), under the "v3.3 changes" section.
+This source-only update continues v3.3 (job 46fe87c6) and addresses the supplied c4b50745 findings. **No deployment, broadcast, token replacement or mint occurred.** Existing build configuration, dependencies and protected directories are unchanged. The old report is archived as [docs/report-v33.md](docs/report-v33.md).
 
-## What changed
+## Findings and requested changes
 
-### 1. Idle farms stop diluting (`FarmRewards`)
-- Every owner action re-commits the farm's allocation hash for `IDLE_EPOCHS = 12` epochs (3 days), starting with the next epoch. Owner actions are `FarmCore.sync()` (new), claim, install/unplace, repair, overclock, expand, pack, token pack, lobby and scrap.
-- `_commit` puts the weight in the bucket `expiring[epoch+13]` and takes the farm's previous pending bucket out. When `advanceEpoch` starts epoch *n*, it subtracts `expiring[n]` from `nextTotalHash`. That is one storage read and one delete, with no loop over farms. A test shows that 15 farms expiring together cost the same as one (`testAdvanceIsConstantInExpiringFarms`).
-- `farmWeight(p, e)` returns 0 for epochs at or after the expiry. Epochs a farm earned before expiring keep their weight and stay claimable whenever they are settled. Late settlement pays exactly the same as on-time settlement (`testRewardsEarnedBeforeExpiryAreNeverLost`).
-- `claim` re-commits only when the farm is fully caught up. A partial catch-up still pays out but does not re-commit (`testClaimDoesNotRecommitWhileBehind`).
-- Settling someone else's farm (`settle(p, n)`) does not count as an owner action and does not re-commit it.
-- An expired farm earns nothing and gets no activity XP. The engine still applies event and wear effects when its epochs are settled, as in v3.2. Players should `sync` at least every 3 days.
+| Finding / requirement | Status | Implementation and evidence |
+|---|---|---|
+| H-1: paid/starter entropy expiry devalues receipts | Fixed | Capture or resolve after target+256 re-arms at native block+2. It does not mint, consume a receipt, fix a missing seed or pay a repeat bounty. Captured entropy remains usable indefinitely. No paid fallback Commons. Tests cover exact 256/257 boundaries, replay, full inventories and a starter revealed after the claim window. [Keeper and one-click reveal](docs/entropy-v34.md) are delivered with Python/JS tests. |
+| H-2: unauthorized launch clock; tax; max buy | Fixed | Only the configured official launcher, through the correct PoolManager/pool callback, can initialize. Buy tax is 90% [0,10m), 50% [10m,20m), 25% [20m,30m), then normal 2.25%. **All** stepped tax goes to rewards; sells retain normal fees plus progressive surcharge. All buy-size checks are removed. Exact boundary, hostile sender, unlimited 5 ETH buy and real local v4 settlement tests pass. |
+| H-2: PackSale opening source | Fixed | `opensAt` reads hook `initializedAt+3600`; uninitialized hook cannot open. GameRegistry no longer accepts a timestamp constructor argument, so the complete prediction graph can exist before initialization. Epoch startup rejects uninitialized clocks. |
+| H-3: paid/token purchases before readiness | Fixed | Both purchase paths require `RewardPool.endowed` and the hook's bound FeeRouter to equal this registry's router. Failure rolls back ETH/token transfers, sold counts and farm changes. Readiness tests exercise each missing prerequisite and subsequent success. |
+| H-4: team can bind a look-alike | Fixed | There is no team-only binder. The immutable hook commits the intended Params/root/snapshot/endowment and registry deployment coordinates, and pins the factory. Bind verifies exact registry initcode/address, hook/token/factory back-references and the registry-enrolled, pinned-code FeeRouter. A competing **canonical** game is also rejected. Dynamic constructor data uses `abi.encode` plus a fixed creation-code prefix through `bytes.concat`; the rejected packed-dynamic binding pattern is absent. |
+| M-1 / endowment custody | Fixed locally; live platform preconditions documented | `activateEndowment` is removed. `fundEndowment` accounts for unaccounted tokens actually transferred to the pool and transfers only missing principal; donations, core spending and buybacks cannot counterfeit principal. Before nonzero principal is funded, nothing is available to reserve. Read-only graph prediction and tests transfer 20% directly to the future CREATE2 pool before its code exists. [Launch steps](docs/launch-v34.md) specify that address as primary `remainderTo` and spell out the public fallback if official token prediction/future-address allocation is unavailable. No live platform behavior is asserted. |
+| M-3: best farm ranked by spend/yield ratio | Fixed | Rank absolute weekly spend capped at 1 ETH, requiring at least 20 active epochs. More spend beyond the cap does not improve score. Ties use the existing deterministic address ordering. Tests reject a 19-epoch whale and verify capped ties. |
+| L-1: tickets and district free packs | Fixed | Lottery tickets accumulate committed hash, capped at 100,000 per epoch / 2.8M per week. Three unique winners remain. District free packs require positive spend in that week; an unpaid farm cannot claim one. Referrals remain unchanged. |
+| L-2: district scoring | Fixed | Count active farms with positive eligible district spend. Track top ten spenders with explicit mapping writes. Each wallet contributes at most 10% of the **uncapped** district paying spend, then divide by active paying farms. Free farms cannot dilute the denominator. This is the requested soft cap: a small district can score, unlike the former fixed-point rule. Wallet splitting remains possible. |
+| L-4: buyback safety | Fixed | Slippage maximum 150 bps, five-minute minimum interval, minimum useful purchase `min(0.05 ETH,rewardETH)` and existing configurable maximum batch. Quote deducts normal fees before applying execution tolerance. Dust cannot consume every interval. Failed swaps restore queued funds and last-buy time. Small meaningful batches are allowed for shallow pools; unfilled ETH remains queued. |
+| L-5: Mythic gate timing | Fixed | Each reveal checks the farm's current level. Buying below level 10 no longer permanently records ineligibility. Partial receipts retain their fixed entropy. |
+| Emission follows inflow | Implemented policy proposal + tests | Seven completed cash pack-sale days determine a bounded target. Last-three / first-three-day ratio scales 350 bps, clamped 200–600, moving at most 10% daily. Low runway overrides increases; missing history cannot raise emissions. The swarm still submits Params changes and public letters; this is not a new privileged automated setter. |
+| 42 vs 56 days | Compared | Five seeds × three arrival environments × two drips, plus five-seed entry/regulator ablations. Retain the v3.3 42-day default. Slower release lowers modeled drawdown but does not establish adequate later-cohort payback. Funding freezes the chosen drip. |
+| Faster first reward | Implemented and tested | A farm's first productive installation (including an idle returning farm) joins the current epoch with remaining-seconds weighting. The first snapshot is frozen; subsequent configuration edits retain next-epoch v3.3 rules. Empty epoch prefixes emit nothing. Late-second Green rounding is constrained to the reserved envelope. |
+| Further no-ETH entry lever | Retained route, tested and evaluated | Starter equipment now earns from its first installation epoch; players can use pending rewards for the retained 10% token-pack discount and 5% internal-credit bonus. Anyone may sponsor settlement/reveal gas. No unbacked reward faucet is introduced. Faster first feedback alone does not solve cash payback. |
+| No upgrades / bounded pause | Preserved | Immutable contracts; hook has no owner. Swarm can pause only new PackSale purchases up to 72h with automatic expiry and at least 72 live hours before another pause. All existing claims, withdrawals, sync, epochs, entropy, buybacks and season operations remain live. Existing pause and authorization tests remain in the suite. |
 
-**Tokens returned to active players (simulation, 20% endowment, day 35):** these are the unsettled reservations held for departed farms ("stuck" envelopes).
+## Independent contribution and repairs
 
-| Scenario | v3.2 stuck | v3.3 stuck | Returned to active players |
-|---|---:|---:|---:|
-| steady | 176.37M | 53.92M | **122.45M** |
-| hype | 228.28M | 81.52M | **146.76M** |
-| weak | 136.72M | 41.98M | **94.74M** |
+A second contributor started with fresh task context, reviewed the implementation, wrote five adversarial regression tests and delivered [docs/review-v34.md](docs/review-v34.md). Their high/medium findings were repaired: canonical-code provenance alone did not identify the intended game; dust could occupy every buyback interval; entry rounding could exceed reserves; a late sole entrant could receive an empty epoch's budget; and the first simulation assumed unconditional buy fills. No unresolved high/medium contract finding remains within that review's stated scope. This was a separate model-assisted contributor, not an external human audit or a claim of production certification.
 
-The v3.3 figure still includes each departed farm's last 12 epochs, which it can claim later. Those tokens are owed, not lost.
+The supplied previous static-analysis leads were checked against the actual paths. Binding now has no multi-dynamic `abi.encodePacked` preimage. The hook flush destination is the immutable verified router, with escrow debited before calls and reentrancy protection. Season's top-spender inserts/replacements explicitly write the mapping. Timestamp modulo operations are deterministic ring indices/step clocks, not randomness sources; blockhash randomness limitations are separately disclosed. OpenZeppelin's `^` in its vendored full-precision inverse is intentional arithmetic; dependencies were not edited. Token balance-delta checks sit behind nonReentrant entry points and trusted graph permissions. No warning suppression or detector configuration was added. Slither/Mythril were not available and were not run; Foundry compiler lints are retained in the build log, not represented as an independent audit.
 
-### 2. Anti-rush (`FarmCore`, `Season`)
-- `level(p) = min(xpLevel(p), maxLevelByAge(p))`. The age caps are: under 1 day → 4, under 3 days → 6, under 5 days → 9, otherwise 10. In other words, level 5 needs 1 day, level 7 needs 3 days and level 10 needs 5 days. Room unlocks and rarity gates use the capped level, so paid XP cannot get around them (`testPaidXpCannotBypassAgeGates` uses the maximum paid XP every day plus all activity XP).
-- Paid XP (25 per pack or token pack, plus spending XP from repair, overclock, expand, cable repair and lobby) is limited to `PAID_XP_PER_DAY = 400` per farm per UTC day. Any excess is cut off, and the purchase itself still goes through. Activity XP (100 per active epoch) has no cap.
-- **Merging is removed** (`merge` and the `Merged` event no longer exist). Spare items can be installed, scrapped, or kept once inventory is expanded. Legendary and Mythic items now come only from packs (`PackSale`) and season prizes (lottery: rare/epic; district pack). Supply drops still mint only common/uncommon.
-- **Best district each week:** `Season.districtScore(w,d)` is the counted spend divided by the number of farms in district *d* that were active that week (farms with at least one settled active epoch). One wallet counts for at most 10% of the counted spend. The cap *c* is the exact solution of `c = Σ min(spend_i, c) / 10`. It is computed from a top-10 spender list kept for each district and week. Only the top 10 matter, because at most ten wallets can be at or above the cap. `finalize` picks the highest score. **Consequence:** a district with fewer than 10 spending wallets has no valid allocation under the 10% cap and scores 0 (`testSingleWhaleDistrictCannotWinAlone`). If every district scores 0, district 0 wins by the existing tie rule.
+## Economic results
 
-### 3. Team share (`FeeRouter`)
-- Packs, lobbying and the sell surcharge split **88% reward pool / 10% team (`TEAM_BPS = 1000`) / 2% heartbeat**. The heartbeat is capped at 1 ETH and anything over the cap goes to the pool.
-- The swap base fee stays at 1% team / 1% reward pool.
-- The new `depositLaunchTax()` (callable only by the market) sends 100% to reward buys.
+Full per-seed rows, median/min/max ranges, payback by join weeks 1/2/3, stall, drawdown and team ETH are in [artifacts/v34/simulation.md](artifacts/v34/simulation.md), with raw data in [simulation.json](artifacts/v34/simulation.json). [Assumptions](docs/simulation-v34.md) specify endogenous price/payback response, initial virtual versus actual ETH, sell constraints, oracle approximation, keeper gas, delayed prizes and censoring of unrealized payback. Forty runs cover five distinct seeds per comparison. No fixed arrival count or paid-only winner median is substituted for whole-cohort payback.
 
-### 4. Launch protection (custom hook `V4Market`, flattened as `launch/V4Market.sol`)
-- The anchor is the pool's one-time `afterInitialize` timestamp (`initializedAt`). It cannot be reset, and the hook has no owner.
-- **Buy tax:** `currentBuyTaxBps()` is 9000 at launch and falls linearly to the normal fee (2% project + 0.25% network = 225 bps) over `LAUNCH_TAX_DECAY = 30 minutes`. The part above the normal fee is held as `heldLaunchTax` and `flushFees()` sends it to `FeeRouter.depositLaunchTax` (100% reward pool, no team share). The normal 2% + 0.25% fee keeps its usual split.
-- **Max buy:** `MAX_BUY = 0.5 ETH` of input per swap for `MAX_BUY_WINDOW = 60 minutes`. This also applies to the FeeRouter's own system buys.
-- Sells pay the normal fee plus the existing progressive surcharge (15% total cap) and are not affected by the launch tax.
-- Views for the site: `currentBuyTaxBps()`, `launchTaxTimeLeft()`, `maxBuy()`, `maxBuyTimeLeft()`, `sinceLaunch()`, and `launchStatus()` which returns all of them in one call.
-- **PackSale** opens at `GameRegistry.launchTime + OPEN_DELAY (60 minutes)`. That time is immutable (`opensAt()`, `isOpen()`) and covers both ETH packs and token packs. The VRGDA price clock now starts when sales open, so buyers at opening do not get a decayed price.
-- All constants are fixed in bytecode. Nothing about the launch tax, the max-buy window or the opening time can be changed.
+The model includes five-minute buy opportunities, adaptive batch sizes, a 1.5% floor against a 30-minute price proxy, gas-bounded keeper willingness and retained buyback backlog. The maximum token conservation error across runs is below 0.0002 token out of one billion. Maximum queued buy ETH is approximately 7.595; final queues are below 0.027 ETH. These are modeled values, not operational guarantees. Each contract path is tested separately against actual local v4 mechanics.
 
-### Pausing and upgrades (unchanged)
-Nothing is upgradeable. The swarm role can pause only new PackSale purchases (ETH packs and token packs), for at most 72 hours. The pause expires on its own, and another pause cannot start until 72 hours after the previous one ends. Claims, withdrawals, sync, settle, advanceEpoch, entropy, buybacks and season finalize cannot be paused.
+For the 42-day steady case, median gross team ETH is approximately 9.94 over 35 days, with modeled off-chain scheduling costing 0.24157 ETH. Week-2 and week-3 median repaid fractions are approximately 11.7% and 6.2%; **whole-cohort median payback is not reached**. The 56-day comparison does not cure that result. The inflow regulator improves those steady later-cohort repaid fractions versus the previous policy in these seeds, while first-epoch entry primarily reduces waiting. Hype still shows severe drawdown. Do not interpret the fixes or tests as a promise of profitable play.
 
-## Simulation (v3.3, 20% endowment, 42-day drip, players sync daily)
+Independent 5 ETH sniper round trips, without intervening buyers:
 
-Source: `sim/blackout_sim_v33.py` (derived from the v3.2 model) and `sim/run_v33.py`. Results are in [artifacts/v33/simulation.json](artifacts/v33/simulation.json). Reproduce with `python3 sim/run_v33.py --output artifacts/v33` (standard library only, about 45 s).
+| Buy minute | Tax to reward pool | ETH back with normal sell fee | ETH back with capped sell fee | Bot P/L range |
+|---|---:|---:|---:|---:|
+| 1 | 4.50 | 0.48875 | 0.425 | −4.575 to −4.51125 |
+| 15 | 2.50 | 2.44375 | 2.125 | −2.875 to −2.55625 |
+| 25 | 1.25 | 3.665625 | 3.1875 | −1.8125 to −1.334375 |
 
-| Scenario | Week-1 median payback | Repaid cohort | Stall day | Price drawdown | Team ETH | Heartbeat coverage (paid/due) | Min HB headroom |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| steady | 22.5 d (v3.2: 28.5) | 60.6% | >35 | 29.1% | 11.16 | 100% (0.2033/0.2033) | 0.025 |
-| hype | not reached | 23.2% | 18.75 | 94.0% | 15.40 | 100% (0.1931/0.1931) | 0.098 |
-| weak | not reached | 18.9% | >35 | 38.0% | 2.10 | 100% (0.1647/0.1647) | 0.006 |
+All volume is accepted; the tax funds rewards. These isolated counterfactuals do not prove an attacker cannot profit after unrelated later price increases.
 
-- Team ETH fell from 13.22 / 18.48 / 2.45 to 11.16 / 15.40 / 2.10 because the team share went from 13% to 10%. That 3% now goes to reward buys.
-- Payback in the steady case improves by 6 days, mainly because idle expiry returns about 122M tokens to active farms. Hype and weak still do not pay back within 35 days. The drawdown is higher than in v3.2 because more tokens reach active players, who then sell.
-- **Daily sync:** settlement gas per owner in the model is unchanged, because the same number of epochs is settled in daily batches. Total owner gas is 6.38 / 7.61 / 3.01 ETH across all players. A player who stops for more than 3 days stops earning.
+## Verification and delivery
 
-### Whale (one wallet buys 300 packs on day 1, steady)
-The whale paid 5.94 ETH. Its share of total emission (its committed hash ÷ total committed hash):
+**Final checks: `forge build` passed; `forge test` passed (179 tests, 0 failures, 1 RPC-dependent skip); `forge fmt --check` passed. Five invariants passed across 128 runs / 8,192 handler calls; Python passed 27 tests; both JS reveal cases passed.**
 
-| Day | Whale share |
-|---:|---:|
-| 1 (first committed epoch) | **4.04%** |
-| 3 | **3.18%** |
-| 7 | **2.11%** |
+The final build/test evidence is recorded in [artifacts/v34](artifacts/v34). The required checks are `forge build`, `forge test`, and `forge fmt --check` with pinned Solidity 0.8.26. Module code hashes are regenerated after formatting and checked against exact artifacts. Python economics/keeper tests and the dependency-free JS reveal tests also run offline. The existing RPC-gated historical fork test is skipped without an RPC; real local v4 PoolManager tests run normally.
 
-It holds about 900 items, but it can only equip one room until day 3 (age gate) and starts with level 4 (paid-XP cap), so it cannot use its Legendary or Mythic items early. Its 400 paid XP per day plus activity XP reach level 10 only at day 5.
+Legacy event/accounting arithmetic unit fixtures explicitly suppress the optional first-entry shortcut to test established epoch snapshots against their existing independent oracle; the new v3.4 tests and invariant handler exercise immediate entry without that mock. Zero-endowment legacy fixtures explicitly mock the purchase readiness flag, while dedicated v3.4/Endowment tests use real funding accounting. No fixture bypass is in production contracts. The invariants check token conservation, reserved obligations, inventory/ETH liabilities, bounds and receipt/entropy preservation.
 
-### Snipers (bots buy 5 ETH in the first minute, as 10 × 0.5 ETH max buys)
-Single-sided model AMM at the 20% endowment opening cap, with no other trading.
-
-| | With v3.3 launch tax | Without (v3.2) |
-|---|---:|---:|
-| Bot cost | 5.00 ETH | 5.00 ETH |
-| Tokens received | 48.0M | 270.1M |
-| Launch tax collected to reward pool | **4.314 ETH** | 0 |
-| Price after snipe = at 30 min = at 60 min (no other flow) | +15.3% | +165.2% |
-| Bot result if dumped at 30/60 min (15% capped sell fee) | **−4.51 ETH** | −0.85 ETH |
-
-Because no other trades are modelled, the price at 30 and 60 minutes equals the price right after the snipe. Organic buyers arriving in that window pay the remaining tax on the curve. The sell fee cap is a worst case for the bots.
-
-## Tests
-
-`forge build`, `forge test` (159 passed, 0 failed, 1 skipped — the existing opt-in fork test) and `forge fmt --check` pass with solc 0.8.26 as pinned in foundry.toml. New tests are in `test/V33.t.sol`:
-- idle expiry: drop-out after 12 epochs, no reward loss when settled late, `sync`/claim/pack re-commit from the next epoch, moving the bucket without double counting, no re-commit while behind, constant-cost advance;
-- anti-rush: age caps at every boundary, the paid-XP daily cap and its daily reset, partial clipping, uncapped activity XP, paid XP unable to bypass the level 7/10 gates (rooms and Mythic), merge removed, district average per active farm, the 10% wallet cap (exact fixed point and top-10 tracking), a lone-whale district;
-- split: 88/10/2 for packs, lobbying and the surcharge, the heartbeat cap overflow going to the pool, the 1%/1% base fee, launch tax only from the market and 100% to the pool;
-- hook: views before initialization, the tax curve at 0/15/29/30 minutes and 10 days, the tax going to the pool through flush, a normal buy after the decay, sells during launch, the max buy at 59/60 minutes, split sniper buys;
-- PackSale: opening time at T−1 s and T, token packs gated as well.
-
-Existing tests were updated for v3.3 semantics: the test token launch is 1 hour before the fixture start so that sales are open, there are 10% split numbers, buys happen after the launch window, players sync every 8 epochs in long runs, and there is a `veteran()` fixture that backdates an older farm. The v3.2 ArbSys clock test now uses `vm.mockCall`, because Foundry 1.8 reserves address 0x64 and the old test failed in v3.2 as well.
-
-The module creation-code pins (`src/lib/ModuleCode.sol`) were regenerated with `tools/pin_module_code.py`, and `--check` passes.
-
-## Review
-
-No independent second contributor was available in this run. The review in [docs/review-v33.md](docs/review-v33.md) was done by the same author with a fresh checklist pass (eth-security reference). **An independent adversarial review is still required before any launch.**
-
-## Assumptions and open items
-- The hook's launch clock is pool initialization, while PackSale's is `GameRegistry.launchTime`. The launch must pass the token launch timestamp (the pool initialization time) to GameRegistry, so that sales open exactly 60 minutes after the pool.
-- The 10% wallet cap means a district needs at least 10 spending wallets to score. If you would prefer "a wallet counts for at most 10% of the district's total spend" (a softer rule under which small districts can still win), that is a one-line change. **This is a decision for the requester.**
-- The paid-XP day is the UTC day (`block.timestamp / 1 days`), not a rolling 24 hours.
-- The simulation is a scenario model, not an EVM emulator. The v3.2 comparison uses the figures from the v3.2 report.
+The maintained launch guide is [docs/launch-v34.md](docs/launch-v34.md). It lists all immutable parameters, factory/prediction trust requirements, public binding/funding receipts, keeper and swarm responsibilities, and the exact custody fallback. The official launcher, token-address prediction and future application coordinates must be verified by the separately authorized deployer before any transaction. No launch manifest, private key, stand-in deployment address or external dependency was added. The browser integration is source for the site maintainer; no website publication occurred.

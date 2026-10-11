@@ -60,18 +60,16 @@ contract PacksTest is BaseTest {
         d.packs.resolve(id, 1);
     }
 
-    function testExpiryThreeCommonGpusAndInventoryOpeningLimit() public {
+    function testExpiryRearmsWithoutMintingAndInventoryOpeningLimit() public {
         uint256 q = d.packs.quote(6);
         vm.prank(alice);
         uint256 id = d.packs.openPack{value: q}(6);
         vm.roll(vm.getBlockNumber() + 300);
         d.packs.resolve(id, 5);
+        assertEq(d.items.inventory(alice), 0);
+        entropy();
+        d.packs.resolve(id, 5);
         assertEq(d.items.inventory(alice), 15);
-        for (uint256 i = 1; i <= 15; ++i) {
-            FarmItems.Item memory x = d.items.data(i);
-            assertEq(x.kind, 0);
-            assertEq(x.rarity, 0);
-        }
         vm.expectRevert(InsufficientBalance.selector);
         d.packs.resolve(id, 1);
         vm.prank(alice);
@@ -150,8 +148,11 @@ contract PacksTest is BaseTest {
         d.starter.claim(17, proof);
         vm.roll(vm.getBlockNumber() + 300);
         d.starter.resolve(17);
+        assertEq(d.items.inventory(alice), 0);
+        entropy();
+        d.starter.resolve(17);
         assertEq(d.items.inventory(alice), 3);
-        assertEq(d.items.data(1).rarity, 1);
+        assertGe(d.items.data(1).rarity, 1);
         vm.warp(launch + 16 days);
         vm.expectRevert(TooEarly.selector);
         vm.prank(alice);

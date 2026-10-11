@@ -35,7 +35,6 @@ contract RegistryTest is BaseTest {
             address(token),
             address(d.params),
             address(market),
-            launch,
             keccak256("real test root"),
             123,
             100_000_000 ether,

@@ -38,6 +38,11 @@ contract Season is GameModule, ReentrancyGuard {
     mapping(uint256 => mapping(uint256 => address)) public participant;
     mapping(uint256 => mapping(uint256 => uint256)) private tree;
     mapping(uint256 => mapping(address => uint256)) public tickets;
+    mapping(uint256 => mapping(address => uint256)) public activeEpochs;
+    uint256 public constant BEST_MIN_EPOCHS = 20;
+    uint256 public constant BEST_SPEND_CAP = 1 ether;
+    uint256 public constant TICKET_HASH_CAP = 100_000;
+    uint256 public constant WEEK_TICKET_CAP = 28 * TICKET_HASH_CAP;
     mapping(uint256 => mapping(address => bool)) public districtClaimed;
     mapping(uint256 => mapping(address => bool)) public lotteryWon;
     mapping(uint256 => mapping(address => bool)) public lotteryClaimed;
@@ -49,6 +54,7 @@ contract Season is GameModule, ReentrancyGuard {
     mapping(uint256 => mapping(address => uint256)) public districtSpendOf;
     mapping(uint256 => mapping(uint256 => uint256)) public activeFarms;
     mapping(uint256 => mapping(address => bool)) public activeCounted;
+    mapping(uint256 => mapping(address => bool)) public payingCounted;
     mapping(uint256 => mapping(uint256 => address[10])) private topSpenders;
     event SeasonPrepared(uint256 indexed week, uint256 target);
     event SeasonFinalized(uint256 indexed week, uint256 district, address best, bytes32 seed);
@@ -95,9 +101,17 @@ contract Season is GameModule, ReentrancyGuard {
         spend[w][p] += value;
         if (districtSpend && value != 0) {
             uint256 d = district(p);
-            seasons[w].districtSpend[d] += value;
             districtSpendOf[w][p] += value;
-            _track(w, d, p);
+            if (activeCounted[w][p]) {
+                if (!payingCounted[w][p]) {
+                    payingCounted[w][p] = true;
+                    activeFarms[w][d]++;
+                    seasons[w].districtSpend[d] += districtSpendOf[w][p];
+                } else {
+                    seasons[w].districtSpend[d] += value;
+                }
+                _track(w, d, p);
+            }
         }
     }
 
@@ -111,7 +125,7 @@ contract Season is GameModule, ReentrancyGuard {
             address q = top[i];
             if (q == p) return;
             if (q == address(0)) {
-                top[i] = p;
+                topSpenders[w][d][i] = p;
                 return;
             }
             uint256 v = districtSpendOf[w][q];
@@ -120,40 +134,19 @@ contract Season is GameModule, ReentrancyGuard {
                 slot = i;
             }
         }
-        if (districtSpendOf[w][p] > low) top[slot] = p;
+        if (districtSpendOf[w][p] > low) topSpenders[w][d][slot] = p;
     }
 
-    /// @notice District score: capped district spend divided by active farms in that district this week.
-    /// The cap c solves c = (sum of min(spend_i, c)) / 10, so no wallet exceeds 10% of the counted spend.
+    /// @notice Average active-paying spend, with each wallet capped at 10% of the uncapped district total.
+    /// This is the requested soft cap, so even districts with fewer than ten payers can compete.
     function districtScore(uint256 w, uint256 d) public view returns (uint256 score, uint256 counted) {
         uint256 farms_ = activeFarms[w][d];
         if (farms_ == 0) return (0, 0);
-        uint256[10] memory v;
-        address[10] storage top = topSpenders[w][d];
+        counted = seasons[w].districtSpend[d];
+        uint256 cap = counted / WALLET_SHARE_DIV;
         for (uint256 i; i < TOP; ++i) {
-            if (top[i] != address(0)) v[i] = districtSpendOf[w][top[i]];
-        }
-        // Sort descending (ten elements).
-        for (uint256 i = 1; i < TOP; ++i) {
-            uint256 x = v[i];
-            uint256 j = i;
-            while (j != 0 && v[j - 1] < x) {
-                v[j] = v[j - 1];
-                --j;
-            }
-            v[j] = x;
-        }
-        uint256 rest = seasons[w].districtSpend[d];
-        counted = rest;
-        // k wallets capped: c = (total - sum of top k) / (10 - k); valid when v[k] <= c.
-        uint256 head;
-        for (uint256 k; k < TOP; ++k) {
-            uint256 c = (rest - head) / (WALLET_SHARE_DIV - k);
-            if (v[k] <= c) {
-                counted = k == 0 ? rest : c * WALLET_SHARE_DIV;
-                break;
-            }
-            head += v[k];
+            address p = topSpenders[w][d][i];
+            if (p != address(0) && districtSpendOf[w][p] > cap) counted -= districtSpendOf[w][p] - cap;
         }
         score = counted / farms_;
     }
@@ -171,14 +164,21 @@ contract Season is GameModule, ReentrancyGuard {
         return launchTime() + (w + 1) * 7 days + SETTLEMENT_GRACE;
     }
 
-    function recordActivity(address p, uint256 w, uint256 gross) external {
+    function recordActivity(address p, uint256 w, uint256 gross, uint256 committedHash) external {
         if (msg.sender != address(rewards())) revert Unauthorized();
         if (block.timestamp >= deadline(w) || completed[w][p]) return;
         if (!activeCounted[w][p]) {
             activeCounted[w][p] = true;
-            activeFarms[w][district(p)]++;
+            if (districtSpendOf[w][p] != 0) {
+                uint256 d = district(p);
+                payingCounted[w][p] = true;
+                activeFarms[w][d]++;
+                seasons[w].districtSpend[d] += districtSpendOf[w][p];
+                _track(w, d, p);
+            }
         }
-        tickets[w][p]++;
+        activeEpochs[w][p]++;
+        tickets[w][p] = Math.min(WEEK_TICKET_CAP, tickets[w][p] + Math.min(committedHash, TICKET_HASH_CAP));
         yield[w][p] += gross;
     }
 
@@ -188,8 +188,7 @@ contract Season is GameModule, ReentrancyGuard {
         if (block.timestamp >= deadline(w) || completed[w][p]) return;
         completed[w][p] = true;
         uint256 weight = tickets[w][p];
-        uint256 earned = yield[w][p];
-        if (weight == 0 || earned == 0) return;
+        if (weight == 0) return;
         Week storage s = seasons[w];
         uint256 i = ++s.participants;
         if (i >= 1 << 32) revert InvalidValue();
@@ -197,7 +196,8 @@ contract Season is GameModule, ReentrancyGuard {
         participant[w][i] = p;
         s.totalTickets += weight;
         _add(w, i, weight, false);
-        uint256 score = Math.mulDiv(spend[w][p], 1 ether, earned);
+        if (activeEpochs[w][p] < BEST_MIN_EPOCHS || spend[w][p] == 0) return;
+        uint256 score = Math.min(spend[w][p], BEST_SPEND_CAP);
         if (s.best == address(0) || score > s.bestScore || (score == s.bestScore && uint160(p) < uint160(s.best))) {
             s.best = p;
             s.bestScore = score;
@@ -285,8 +285,8 @@ contract Season is GameModule, ReentrancyGuard {
     function claimDistrict(uint256 w) external nonReentrant returns (uint256 id) {
         Week storage s = seasons[w];
         if (
-            !s.finalized || index[w][msg.sender] == 0 || district(msg.sender) != s.winnerDistrict
-                || districtClaimed[w][msg.sender]
+            !s.finalized || index[w][msg.sender] == 0 || spend[w][msg.sender] == 0
+                || district(msg.sender) != s.winnerDistrict || districtClaimed[w][msg.sender]
         ) revert InvalidValue();
         districtClaimed[w][msg.sender] = true;
         id = packs().rewardPack(msg.sender);

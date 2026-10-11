@@ -3,6 +3,8 @@ pragma solidity 0.8.26;
 import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {wadExp, wadLn} from "solmate/src/utils/SignedWadMath.sol";
+import {RewardPool} from "./RewardPool.sol";
+import {ILaunchHook} from "./interfaces/ILaunchHook.sol";
 import {FarmItems} from "./FarmItems.sol";
 import {Params} from "./Params.sol";
 import {FeeRouter} from "./FeeRouter.sol";
@@ -25,7 +27,7 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     uint256 public sold;
-    /// @notice Sales open this long after the immutable token launch timestamp in GameRegistry.
+    /// @notice Sales open this long after the authenticated hook initialization timestamp.
     uint256 public constant OPEN_DELAY = 60 minutes;
     uint256 public pausedUntil;
     uint256 public nextPauseAt;
@@ -81,7 +83,9 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     function opensAt() public view returns (uint256) {
-        return registry.launchTime() + OPEN_DELAY;
+        return ILaunchHook(registry.market()).initializedAt() == 0
+            ? type(uint256).max
+            : ILaunchHook(registry.market()).initializedAt() + OPEN_DELAY;
     }
 
     function isOpen() public view returns (bool) {
@@ -126,6 +130,7 @@ contract PackSale is GameModule, ReentrancyGuard {
     function openPack(uint256 n) external payable nonReentrant returns (uint256 id) {
         if (block.timestamp < opensAt()) revert TooEarly();
         if (paused() || msg.value != quote(n)) revert InvalidValue();
+        _requireReady();
         sold += n;
         farm().register(msg.sender);
         farm().paidPackBought(msg.sender, n, msg.value);
@@ -136,8 +141,15 @@ contract PackSale is GameModule, ReentrancyGuard {
     function tokenPack(address p) external nonReentrant returns (uint256 id) {
         if (msg.sender != address(farm())) revert Unauthorized();
         if (paused() || block.timestamp < opensAt()) revert TooEarly();
+        _requireReady();
         sold++;
         id = _commit(p, 1, false);
+    }
+
+    function _requireReady() private view {
+        if (!RewardPool(registry.module(0)).endowed() || ILaunchHook(registry.market()).fees() != address(fees())) {
+            revert NotConfigured();
+        }
     }
 
     function rewardPack(address p) external nonReentrant returns (uint256 id) {
@@ -148,7 +160,7 @@ contract PackSale is GameModule, ReentrancyGuard {
     function _commit(address p, uint256 n, bool guaranteed) private returns (uint256 id) {
         id = nextId++;
         uint64 target = uint64(ChainClock.number() + 2);
-        commits[id] = Commit(p, target, n, 0, farm().level(p) >= 10, guaranteed, bytes32(0), false, false);
+        commits[id] = Commit(p, target, n, 0, false, guaranteed, bytes32(0), false, false);
         emit PackCommitted(id, p, n, target, guaranteed);
     }
 
@@ -157,17 +169,36 @@ contract PackSale is GameModule, ReentrancyGuard {
         _capture(id, msg.sender);
     }
 
-    function _capture(uint256 id, address keeper) private {
+    function _capture(uint256 id, address keeper) private returns (bool) {
         uint256 startGas = gasleft();
         Commit storage c = commits[id];
         if (c.player == address(0)) revert InvalidValue();
-        if (c.fixedSeed) return;
+        if (c.fixedSeed) return true;
         if (ChainClock.number() <= c.target) revert TooEarly();
         bytes32 h = ChainClock.hash(c.target);
-        c.expired = h == bytes32(0);
+        if (h == bytes32(0)) {
+            if (ChainClock.number() <= uint256(c.target) + 256) revert NotConfigured();
+            _rearm(id, c);
+            return false;
+        }
         c.seed = keccak256(abi.encode(h, address(this), id));
         c.fixedSeed = true;
         fees().payWork(keeper, Params.Key.EntropyBounty, 1, startGas - gasleft());
+        return true;
+    }
+
+    event PackRearmed(uint256 indexed id, uint256 target);
+
+    function rearm(uint256 id) external {
+        Commit storage c = commits[id];
+        if (c.player == address(0)) revert InvalidValue();
+        if (c.fixedSeed || ChainClock.number() <= uint256(c.target) + 256) revert TooEarly();
+        _rearm(id, c);
+    }
+
+    function _rearm(uint256 id, Commit storage c) private {
+        c.target = uint64(ChainClock.number() + 2);
+        emit PackRearmed(id, c.target);
     }
 
     /// @notice Opening is bounded; unopen packs stay claimable while the player makes inventory space.
@@ -175,14 +206,15 @@ contract PackSale is GameModule, ReentrancyGuard {
         Commit storage c = commits[id];
         if (c.player == address(0) || n == 0 || n > 8 || n > c.count - c.opened) revert InvalidValue();
         if (ChainClock.number() <= c.target) revert TooEarly();
+        if (!_capture(id, msg.sender)) return;
         if (items().inventory(c.player) + n * 3 > items().capacity(c.player)) revert InsufficientBalance();
-        _capture(id, msg.sender);
+        c.mythic = farm().level(c.player) >= 10;
         uint256 first = c.opened * 3;
         c.opened += n;
         for (uint256 i; i < n * 3; ++i) {
             uint8 k;
             uint8 r;
-            if (!c.expired) (k, r) = ItemMath.draw(keccak256(abi.encode(c.seed, first + i)), c.mythic, false);
+            (k, r) = ItemMath.draw(keccak256(abi.encode(c.seed, first + i)), c.mythic, false);
             if (c.guaranteed && i % 3 == 0 && r < 1) r = 1;
             items().mint(c.player, k, r, false);
         }

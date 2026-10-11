@@ -8,8 +8,15 @@ import "../src/lib/Errors.sol";
 contract FactoryTest is BaseTest {
     function testHookFactoryFlagsImmutableConfigAndIdempotence() public {
         MarketFactory factory = new MarketFactory();
-        MarketFactory.Config memory c =
-            MarketFactory.Config(makeAddr("test manager"), address(token), makeAddr("test network"), 60);
+        MarketFactory.Config memory c = MarketFactory.Config(
+            makeAddr("test manager"),
+            address(token),
+            makeAddr("test network"),
+            60,
+            address(this),
+            address(bindingFactory),
+            bindingConfigHash()
+        );
         (bytes32 salt, address predicted) = factory.findSalt(c, 0, 100000);
         assertEq(uint160(predicted) & 0x3fff, 0x10cc);
         assertEq(factory.predict(c, salt), predicted);

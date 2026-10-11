@@ -31,7 +31,17 @@ contract V4IntegrationTest is BaseTest {
         network = makeAddr("integration network");
         manager = RealManager(address(new PoolManager(address(this))));
         bytes memory code = abi.encodePacked(
-            type(V4Market).creationCode, abi.encode(address(manager), address(token), network, uint24(0), int24(60))
+            type(V4Market).creationCode,
+            abi.encode(
+                address(manager),
+                address(token),
+                network,
+                uint24(0),
+                int24(60),
+                address(this),
+                address(bindingFactory),
+                bindingConfigHash()
+            )
         );
         bytes32 hash = keccak256(code);
         bytes32 salt;
@@ -40,10 +50,19 @@ contract V4IntegrationTest is BaseTest {
             address target = vm.computeCreate2Address(salt, hash, address(this));
             if (uint160(target) & 0x3fff == 0x10cc) break;
         }
-        hook = new V4Market{salt: salt}(address(manager), address(token), network, 0, 60);
-        router = newFees(address(hook));
+        hook = new V4Market{salt: salt}(
+            address(manager),
+            address(token),
+            network,
+            0,
+            60,
+            address(this),
+            address(bindingFactory),
+            bindingConfigHash()
+        );
+        router = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(router));
+        hook.bindFeeRouter(address(router), 7, 1);
         manager.initialize(hook.key(), uint160(1 << 96));
         manager.unlock(abi.encode(uint8(0), uint256(1000 ether)));
         vm.warp(vm.getBlockTimestamp() + 60 minutes);
@@ -104,8 +123,8 @@ contract V4IntegrationTest is BaseTest {
         router.depositBaseFee{value: 1 ether}();
         uint256 beforePool = token.balanceOf(address(d.pool));
         uint256 quoted = hook.quote(0.5 ether);
-        router.executeBuys(0.5 ether, quoted * 97 / 100);
-        assertGe(token.balanceOf(address(d.pool)) - beforePool, quoted * 97 / 100);
+        router.executeBuys(0.5 ether, quoted * 985 / 1000);
+        assertGe(token.balanceOf(address(d.pool)) - beforePool, quoted * 985 / 1000);
         (uint256 hour, uint256 day) = hook.imbalances();
         assertEq(hour, 0);
         assertEq(day, 0);
@@ -122,10 +141,10 @@ contract V4IntegrationTest is BaseTest {
         vm.deal(address(d.packs), 1 ether);
         vm.prank(address(d.packs));
         router.depositPack{value: 1 ether}();
-        uint256 q = hook.quote(0.2 ether) * 97 / 100;
+        uint256 q = hook.quote(0.5 ether) * 985 / 1000;
         uint256 beforeCredit = router.credit(address(this));
         uint256 start = gasleft();
-        router.executeBuys(0.2 ether, q);
+        router.executeBuys(0.5 ether, q);
         uint256 used = start - gasleft();
         uint256 paid = router.credit(address(this)) - beforeCredit;
         emit log_named_uint("real V4 0.2ETH buy gas", used);
@@ -141,7 +160,7 @@ contract V4IntegrationTest is BaseTest {
 
         router.depositBaseFee{value: 1 ether}();
         uint256 beforePool = token.balanceOf(address(d.pool));
-        router.executeBuys(0.5 ether, hook.quote(0.5 ether) * 97 / 100);
+        router.executeBuys(0.5 ether, hook.quote(0.5 ether) * 985 / 1000);
         assertGt(token.balanceOf(address(d.pool)), beforePool);
 
         // 0.48875 ETH of pool buy input exceeds the preceding ~0.1 ETH sell output.

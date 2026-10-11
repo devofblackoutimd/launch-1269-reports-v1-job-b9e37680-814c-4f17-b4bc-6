@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
-import {BaseTest} from "./Base.t.sol";
+import {DeferredEntryTest} from "./Base.t.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import "../src/lib/Errors.sol";
 
-contract EventsTest is BaseTest {
+contract EventsTest is DeferredEntryTest {
     function testPlansOnlyNextTwoOnceAndBoundedSeverity() public {
         vm.expectRevert(Unauthorized.selector);
         d.grid.submitPlan(2, GridOperator.Kind.Outage, 10000, bytes32(uint256(9)), "bad authority");

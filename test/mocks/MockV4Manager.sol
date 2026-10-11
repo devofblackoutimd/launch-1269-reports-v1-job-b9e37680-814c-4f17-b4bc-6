@@ -5,7 +5,9 @@ import {V4Market} from "../../src/V4Market.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract TestV4Market is V4Market {
-    constructor(address manager_, address token_, address network_) V4Market(manager_, token_, network_, 0, 60) {}
+    constructor(address manager_, address token_, address network_, address factory_, bytes32 config_)
+        V4Market(manager_, token_, network_, 0, 60, msg.sender, factory_, config_)
+    {}
     function _validateHookAddress() internal pure override {}
 }
 

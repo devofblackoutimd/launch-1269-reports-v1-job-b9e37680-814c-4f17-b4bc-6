@@ -1,3 +1,5 @@
+> Historical v3.1–v3.3 procedure. Superseded by [launch-v34.md](launch-v34.md); do not use its team binding, launch-tax, remainder recipient or activation instructions for v3.4.
+
 # BLACKOUT v3.2 launch (retained launch-v31.md filename) and deployment procedure — no deployment performed
 
 This document specifies a future launch, not transaction authorization. There is no `launch.json` in this submission. The platform creates the manifest after acceptance. No token is deployed, replaced or minted by this task. All chain-specific inputs below must come from the actual launch receipt/configuration; test fixture addresses and roots are never production inputs.

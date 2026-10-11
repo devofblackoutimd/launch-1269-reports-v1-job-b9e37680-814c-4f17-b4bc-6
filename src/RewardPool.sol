@@ -16,6 +16,7 @@ contract RewardPool is GameModule, ReentrancyGuard {
     uint256 public dripStart;
     uint256 public dripPeriod;
     bool public endowed;
+    uint256 public otherInflow; // Non-endowment funds received before funding, never counted twice.
     event Endowed(address indexed caller, uint256 amount, uint256 start, uint256 period);
     event Donated(address indexed sender, uint256 amount);
     event Reserved(uint256 amount);
@@ -52,25 +53,32 @@ contract RewardPool is GameModule, ReentrancyGuard {
     }
 
     function available() public view returns (uint256) {
+        if (!endowed && endowment() != 0) return 0;
         uint256 balance = token().balanceOf(address(this));
         uint256 excluded = reserved + lockedEndowment();
         return balance > excluded ? balance - excluded : 0;
     }
 
-    /// @notice Exact approval plus this call publicly funds the immutable endowment. No donor rights arise.
+    /// @notice Count unaccounted tokens already transferred to the CREATE2 address by the launcher,
+    /// then transfer only any missing principal from the caller. Donations/buybacks/spend are excluded.
+    /// There is no balance-only activation path that can reuse ordinary game revenue as endowment.
     function fundEndowment() external nonReentrant {
-        if (endowed || endowment() == 0) revert AlreadyDone();
+        uint256 principal = endowment();
+        if (endowed || principal == 0) revert AlreadyDone();
         uint256 before_ = token().balanceOf(address(this));
-        token().safeTransferFrom(msg.sender, address(this), endowment());
-        if (token().balanceOf(address(this)) - before_ != endowment()) revert InvalidValue();
+        uint256 direct = before_ > otherInflow ? before_ - otherInflow : 0;
+        if (direct < principal) {
+            uint256 missing = principal - direct;
+            token().safeTransferFrom(msg.sender, address(this), missing);
+            if (token().balanceOf(address(this)) - before_ != missing) revert InvalidValue();
+        }
         _startDrip();
     }
 
-    /// @notice Also accepts a plain transfer followed by this permissionless activation.
-    function activateEndowment() external nonReentrant {
-        if (endowed || endowment() == 0) revert AlreadyDone();
-        if (token().balanceOf(address(this)) < reserved + endowment()) revert InsufficientBalance();
-        _startDrip();
+    /// @dev The immutable core/router measure the actual balance delta before reporting ordinary inflows.
+    function recordInflow(uint256 amount) external {
+        if (msg.sender != registry.module(2) && msg.sender != registry.module(6)) revert Unauthorized();
+        if (!endowed) otherInflow += amount;
     }
 
     function _startDrip() private {
@@ -87,6 +95,7 @@ contract RewardPool is GameModule, ReentrancyGuard {
         uint256 before_ = token().balanceOf(address(this));
         token().safeTransferFrom(msg.sender, address(this), amount);
         if (token().balanceOf(address(this)) - before_ != amount) revert InvalidValue();
+        if (!endowed) otherInflow += amount;
         emit Donated(msg.sender, amount);
     }
 

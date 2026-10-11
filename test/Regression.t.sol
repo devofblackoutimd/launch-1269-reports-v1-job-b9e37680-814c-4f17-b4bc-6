@@ -2,11 +2,11 @@
 pragma solidity 0.8.26;
 import {FarmEngine} from "../src/FarmEngine.sol";
 import {Params} from "../src/Params.sol";
-import {BaseTest} from "./Base.t.sol";
+import {DeferredEntryTest} from "./Base.t.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import "../src/lib/Errors.sol";
 
-contract RegressionTest is BaseTest {
+contract RegressionTest is DeferredEntryTest {
     function testUnlimitedFreshPacksCannotDrainPoolByScrapping() public {
         fund(1_000_000 ether);
         payPack(alice);
@@ -24,6 +24,8 @@ contract RegressionTest is BaseTest {
         uint256 pack = d.farm.buyTokenPack(true);
         uint256 first = d.items.nextId();
         vm.roll(vm.getBlockNumber() + 300);
+        d.packs.resolve(pack, 1);
+        entropy();
         d.packs.resolve(pack, 1);
         for (uint256 i; i < 3; ++i) {
             vm.prank(alice);

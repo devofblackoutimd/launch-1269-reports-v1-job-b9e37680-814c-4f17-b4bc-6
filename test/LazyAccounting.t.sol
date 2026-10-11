@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {BaseTest} from "./Base.t.sol";
+import {DeferredEntryTest} from "./Base.t.sol";
 import {FarmRewards} from "../src/FarmRewards.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import {Params} from "../src/Params.sol";
 import "../src/lib/Errors.sol";
 
 /// @dev Independent eager room model: plain memory items, no calls to FarmEngine/roomStats.
-contract LazyAccountingTest is BaseTest {
+contract LazyAccountingTest is DeferredEntryTest {
     struct RefItem {
         uint8 kind;
         uint8 rarity;

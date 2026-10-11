@@ -60,7 +60,7 @@ contract KeeperProfitTest is BaseTest {
         for (uint256 i; i < participants; ++i) {
             address player = address(uint160(0x77000 + i));
             vm.prank(address(d.rewards));
-            d.season.recordActivity(player, 0, (i + 1) * 10 ether);
+            d.season.recordActivity(player, 0, (i + 1) * 10 ether, 10000);
             vm.prank(address(d.farm));
             d.season.recordSpend(player, 1 ether, true);
             vm.prank(address(d.rewards));

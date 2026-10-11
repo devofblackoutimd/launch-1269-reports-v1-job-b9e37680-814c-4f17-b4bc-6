@@ -16,10 +16,10 @@ contract MarketTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("network recipient");
-        hook = new TestV4Market(address(manager), address(token), network);
-        d.fees = newFees(address(hook));
+        hook = new TestV4Market(address(manager), address(token), network, address(bindingFactory), bindingConfigHash());
+        d.fees = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(d.fees));
+        hook.bindFeeRouter(address(d.fees), 7, 1);
         vm.deal(address(manager), 10000 ether);
         token.transfer(address(manager), 10000 ether);
         manager.initializeHook(hook);
@@ -37,13 +37,13 @@ contract MarketTest is BaseTest {
         vm.expectRevert(NotConfigured.selector);
         hook.quote(1 ether);
         vm.warp(launch + 31 minutes);
-        assertEq(hook.quote(1 ether), 1 ether);
+        assertEq(hook.quote(1 ether), 0.9775 ether);
         manager.setSqrt(uint160(2 << 96));
         sell(5 ether);
-        assertEq(hook.quote(1 ether), 1 ether);
+        assertEq(hook.quote(1 ether), 0.9775 ether);
         assertEq(hook.lastPrice(), 4 ether);
         vm.warp(vm.getBlockTimestamp() + 31 minutes);
-        assertEq(hook.quote(1 ether), 4 ether);
+        assertEq(hook.quote(1 ether), 3.91 ether);
     }
 
     function testSingleDumpIncludesItselfAndFeeDecaysWithoutGriefReset() public {
@@ -74,7 +74,7 @@ contract MarketTest is BaseTest {
         sell(1 ether);
         vm.warp(start + 30 minutes);
         // Fifteen minutes at 0.25 ETH/token and fifteen at 1 ETH/token average 0.625.
-        assertEq(hook.quote(1 ether), 1.6 ether);
+        assertEq(hook.quote(1 ether), 1.564 ether);
     }
 
     function testOnlyManagerCorrectPoolExactInputAndHookAddress() public {
@@ -88,7 +88,16 @@ contract MarketTest is BaseTest {
         vm.expectRevert(Unauthorized.selector);
         hook.unlockCallback("");
         vm.expectRevert(InvalidAddress.selector);
-        new V4Market(address(manager), address(token), network, 0, 60);
+        new V4Market(
+            address(manager),
+            address(token),
+            network,
+            0,
+            60,
+            address(this),
+            address(bindingFactory),
+            bindingConfigHash()
+        );
     }
 
     function testBuyChargesOnlyBaseAndNetworkPullPayment() public {

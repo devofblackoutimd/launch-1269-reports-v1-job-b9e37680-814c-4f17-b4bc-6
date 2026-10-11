@@ -66,15 +66,38 @@ contract StarterClaim is GameModule, ReentrancyGuard {
         _capture(tokenId, msg.sender);
     }
 
-    function _capture(uint256 tokenId, address keeper) private {
+    function _capture(uint256 tokenId, address keeper) private returns (bool) {
         uint256 startGas = gasleft();
         Claim storage c = claims[tokenId];
         if (c.player == address(0)) revert InvalidValue();
-        if (entropyCaptured[tokenId]) return;
+        if (entropyCaptured[tokenId]) return true;
         if (ChainClock.number() <= c.target) revert TooEarly();
-        entropyHash[tokenId] = ChainClock.hash(c.target);
+        bytes32 h = ChainClock.hash(c.target);
+        if (h == bytes32(0)) {
+            if (ChainClock.number() <= uint256(c.target) + 256) revert NotConfigured();
+            _rearm(tokenId, c);
+            return false;
+        }
+        entropyHash[tokenId] = h;
         entropyCaptured[tokenId] = true;
         fees().payWork(keeper, Params.Key.EntropyBounty, 1, startGas - gasleft());
+        return true;
+    }
+
+    event StarterRearmed(uint256 indexed tokenId, uint256 target);
+
+    function rearm(uint256 tokenId) external {
+        Claim storage c = claims[tokenId];
+        if (c.player == address(0)) revert InvalidValue();
+        if (c.resolved || entropyCaptured[tokenId] || ChainClock.number() <= uint256(c.target) + 256) {
+            revert TooEarly();
+        }
+        _rearm(tokenId, c);
+    }
+
+    function _rearm(uint256 tokenId, Claim storage c) private {
+        c.target = uint64(ChainClock.number() + 2);
+        emit StarterRearmed(tokenId, c.target);
     }
 
     function resolve(uint256 tokenId) external nonReentrant {
@@ -82,13 +105,13 @@ contract StarterClaim is GameModule, ReentrancyGuard {
         if (c.player == address(0)) revert InvalidValue();
         if (c.resolved) revert AlreadyDone();
         if (ChainClock.number() <= c.target) revert TooEarly();
+        if (!_capture(tokenId, msg.sender)) return;
         if (items().inventory(c.player) + 3 > items().capacity(c.player)) revert InsufficientBalance();
         c.resolved = true;
-        _capture(tokenId, msg.sender);
         bytes32 h = entropyHash[tokenId];
         for (uint256 i; i < 3; ++i) {
             (uint8 k, uint8 r) = ItemMath.draw(keccak256(abi.encode(h, address(this), tokenId, i)), false, true);
-            items().mint(c.player, h == bytes32(0) ? 0 : k, h == bytes32(0) ? 1 : r, true);
+            items().mint(c.player, k, r, true);
         }
         emit StarterResolved(tokenId, h == bytes32(0));
     }

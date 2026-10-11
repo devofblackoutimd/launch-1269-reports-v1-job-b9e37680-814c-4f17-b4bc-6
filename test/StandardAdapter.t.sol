@@ -52,9 +52,9 @@ contract StandardAdapterTest is BaseTest {
         assertEq(adapter.key().hooks, adapter.standardHook());
         fees.depositBaseFee{value: 1 ether}();
         uint256 before_ = token.balanceOf(address(d.pool));
-        fees.executeBuys(0.1 ether, 0.1 ether);
-        assertEq(token.balanceOf(address(d.pool)) - before_, 0.1 ether);
-        assertEq(fees.rewardETH(), 0.4 ether);
+        fees.executeBuys(0.5 ether, 0.5 ether);
+        assertEq(token.balanceOf(address(d.pool)) - before_, 0.5 ether);
+        assertEq(fees.rewardETH(), 0);
         assertEq(fees.heartbeatBalance(), 0);
     }
 
@@ -74,7 +74,7 @@ contract StandardAdapterTest is BaseTest {
     function testSettlementSlippageFailurePreservesCredits() public {
         fees.depositBaseFee{value: 1 ether}();
         vm.expectRevert(InsufficientBalance.selector);
-        fees.executeBuys(0.1 ether, 0.11 ether);
+        fees.executeBuys(0.5 ether, 0.51 ether);
         assertEq(fees.rewardETH(), 0.5 ether);
     }
 }
