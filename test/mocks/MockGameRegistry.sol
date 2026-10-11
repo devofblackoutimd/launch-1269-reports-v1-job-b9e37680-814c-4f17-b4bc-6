@@ -40,6 +40,10 @@ contract MockGameRegistry is IGameRegistry {
         modules[role] = value;
     }
 
+    function registeredModule(uint256 role) external view returns (address) {
+        return modules[role];
+    }
+
     function module(uint256 role) external view returns (address value) {
         value = modules[role];
         if (value == address(0)) revert NotConfigured();

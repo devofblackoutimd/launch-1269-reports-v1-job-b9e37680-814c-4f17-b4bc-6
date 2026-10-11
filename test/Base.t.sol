@@ -73,6 +73,12 @@ abstract contract BaseTest is Test {
         token.approve(address(d.farm), type(uint256).max);
         vm.prank(swarm);
         d.packs.selectProfile(1);
+        // v3.6 ships growth features disabled; legacy fixtures enable them through the real notice path.
+        if (launchFeatures()) {
+            for (uint256 i = 3; i < 8; ++i) {
+                enableFeature(i);
+            }
+        }
         vm.prank(alice);
         token.approve(address(d.packs), type(uint256).max);
         vm.prank(bob);
@@ -82,6 +88,21 @@ abstract contract BaseTest is Test {
         vm.prank(bob);
         token.approve(address(d.economy), type(uint256).max);
         d.rewards.advanceEpoch();
+    }
+
+    /// @dev Override to return false for a launch-core fixture (v3.6 phased release, nothing enabled).
+    function launchFeatures() internal pure virtual returns (bool) {
+        return true;
+    }
+
+    /// @dev Announce, wait the mandatory 48 hours, enable, then restore the fixture clock.
+    function enableFeature(uint256 feature) internal {
+        uint256 now_ = vm.getBlockTimestamp();
+        vm.prank(swarm);
+        d.civic.announce(feature, "v3.6 phase notice: feature opens in 48 hours");
+        vm.warp(now_ + 48 hours);
+        d.civic.enable(feature);
+        vm.warp(now_);
     }
 
     /// @dev Fixture token launch is one hour before `launch`, so PackSale (launch + 60 min) is open at setUp.

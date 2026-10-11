@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 interface IGameRegistry {
     function module(uint256 role) external view returns (address);
+    function registeredModule(uint256 role) external view returns (address);
     function token() external view returns (address);
     function params() external view returns (address);
     function market() external view returns (address);

@@ -11,6 +11,10 @@ import {RewardPool} from "./RewardPool.sol";
 import {IMarket} from "./interfaces/Interfaces.sol";
 import "./lib/Errors.sol";
 
+interface IFeatureFlags {
+    function enabled(uint256) external view returns (bool);
+}
+
 interface IPotSeason {
     function depositPot(uint256 amount) external;
 }
@@ -121,7 +125,14 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         emit Routed(4, msg.value);
     }
 
-    /// @dev Sell surcharge: 50% season pot, 38% reward buys, 10% team, 2% capped heartbeat.
+    /// @notice v3.6: the season token pot is a phased feature (Civic feature 6). Until it is enabled the
+    /// pot share follows the v3.4 routing, i.e. it stays in reward buys. Unregistered Civic counts as disabled.
+    function potEnabled() public view returns (bool) {
+        address civic = registry.registeredModule(12);
+        return civic != address(0) && IFeatureFlags(civic).enabled(6);
+    }
+
+    /// @dev Sell surcharge: 50% season pot (when enabled), 38% reward buys, 10% team, 2% capped heartbeat.
     function _route(uint8 stream) private {
         if (msg.value == 0) revert InvalidValue();
         uint256 t = msg.value * TEAM_BPS / 10000;
@@ -131,7 +142,7 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         if (h > room) h = room;
         credit[team] += t;
         heartbeatBalance += h;
-        uint256 pot = stream == 3 ? msg.value / 2 : 0;
+        uint256 pot = stream == 3 && potEnabled() ? msg.value / 2 : 0;
         potETH += pot;
         rewardETH += msg.value - t - h - pot;
         emit Routed(stream, msg.value);

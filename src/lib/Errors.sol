@@ -10,3 +10,4 @@ error CatchUpRequired();
 error InsufficientBalance();
 error InvalidProof();
 error TransferFailed();
+error FeatureDisabled();

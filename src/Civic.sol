@@ -20,12 +20,18 @@ interface IPurchaseReadiness {
     function ready() external view returns (bool);
 }
 
-/// @notice Immutable civic escrow and optional modules. All optional features deploy disabled.
+/// @notice Immutable civic escrow, optional modules and the v3.6 phased-release flags.
+/// Features deploy disabled; the swarm announces each one once with a letter, anyone can
+/// enable it after 48 hours, and nothing can ever disable it again. Feature ids:
+/// 0 district war, 1 grid collapse, 2 weekly lots (dormant modules, unchanged),
+/// 3 enhancement, 4 locks + district stake + lobby, 5 billboards, 6 season token pot,
+/// 7 reserved events (Heatwave/Festival plans).
 contract Civic is GameModule, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    uint256 public constant FEATURES = 8;
     uint256 public escrow;
-    uint256[3] public noticeAt;
-    bool[3] public enabled;
+    uint256[8] public noticeAt;
+    bool[8] public enabled;
     mapping(uint256 => bool) public seasonBoostUsed;
     uint256[8] public boostUntil;
     uint16[8] public seasonBoost;
@@ -67,7 +73,7 @@ contract Civic is GameModule, ReentrancyGuard {
     }
 
     function announce(uint256 feature, string calldata letter) external onlySwarm {
-        if (feature >= 3 || noticeAt[feature] != 0 || bytes(letter).length == 0 || bytes(letter).length > 1024) {
+        if (feature >= FEATURES || noticeAt[feature] != 0 || bytes(letter).length == 0 || bytes(letter).length > 1024) {
             revert InvalidValue();
         }
         noticeAt[feature] = block.timestamp + 48 hours;
@@ -75,7 +81,7 @@ contract Civic is GameModule, ReentrancyGuard {
     }
 
     function enable(uint256 feature) external {
-        if (feature >= 3 || noticeAt[feature] == 0 || enabled[feature] || block.timestamp < noticeAt[feature]) {
+        if (feature >= FEATURES || noticeAt[feature] == 0 || enabled[feature] || block.timestamp < noticeAt[feature]) {
             revert TooEarly();
         }
         enabled[feature] = true;

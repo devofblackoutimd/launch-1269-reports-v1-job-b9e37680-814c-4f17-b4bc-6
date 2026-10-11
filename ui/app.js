@@ -78,14 +78,22 @@ async function connect() {
  const chain=Number(BigInt(await provider.request({method:'eth_chainId'})));if(chain!==4663&&chain!==46630)throw Error('Select the published BLACKOUT Robinhood network in your wallet.');
  wallet=(await provider.request({method:'eth_requestAccounts'}))[0];
  const registry=$('registry').value.trim();if(!address(registry))throw Error('Enter the published game registry in Game connection.');
- for(const role of [0,1,2,3,4,5,7,8,10,11,13]) {const result=await call(registry,'module(uint256)',[role]);modules[role]='0x'+result.slice(-40);}
+ for(const role of [0,1,2,3,4,5,7,8,10,11,12,13]) {const result=await call(registry,'module(uint256)',[role]);modules[role]='0x'+result.slice(-40);}
  token='0x'+(await call(registry,'token()')).slice(-40);
  $('connect').textContent=wallet.slice(0,6)+'…'+wallet.slice(-4);
  try{const response=await fetch('./allowlist.json',{cache:'no-store'});if(response.ok)list=await response.json();}catch{list=null;}
  await refresh();status('Connected. Quotes use the last settled mining rate.');
 }
+const phases={};
+// v3.6 phased release: enabled features show; disabled ones are a "coming soon" teaser; dormant modules never appear.
+async function applyPhases() {
+ for(const el of document.querySelectorAll('[data-feature]')) {const f=Number(el.dataset.feature);phases[f]=phases[f]??Boolean(await uint(modules[12],'enabled(uint256)',[f]));
+  if(phases[f]){el.hidden=false;el.querySelector('.teaser')?.remove();}
+  else{el.hidden=false;if(!el.querySelector('.teaser')){const t=document.createElement('p');t.className='teaser';t.textContent=el.dataset.teaser;for(const c of Array.from(el.children))c.hidden=true;el.append(t);}}}
+}
 async function refresh() {
  if(!wallet||!modules[4])return;
+ await applyPhases();
  const [price,daily,pending,open,epoch]=await Promise.all([uint(modules[4],'price()'),uint(modules[10],'farmDaily(address)',[wallet]),uint(modules[1],'pending(address)',[wallet]),uint(modules[4],'ready()'),uint(modules[1],'epoch()')]);
  $('packPrice').textContent=format(price)+' tokens';$('daily').textContent=format(daily)+' tokens';$('pending').textContent=format(pending)+' tokens';$('saleStatus').textContent=open?'Open · epoch '+epoch:'Closed / paused';
  const listed=list?.claims?.[wallet.toLowerCase()];const root=await call(modules[5],'freeRoot()');const claimed=await uint(modules[5],'freeClaimedBy(address)',[wallet]);
@@ -93,7 +101,7 @@ async function refresh() {
  $('items').replaceChildren();const ids=words(await call(modules[3],'itemsByOwner(address,uint256,uint256)',[wallet,0,100])).slice(2);
  for(const id of ids) {const uri=decodeString(await call(modules[3],'uri(uint256)',[id]));if(!uri.startsWith('data:application/json;base64,'))continue;const metadata=JSON.parse(atob(uri.split(',')[1]));const card=document.createElement('div');card.className='machine';const img=document.createElement('img');if(metadata.image.startsWith('data:image/svg+xml;base64,'))img.src=metadata.image;img.alt=metadata.name;const text=document.createElement('div');text.textContent="#"+id+" · "+metadata.name;card.append(img,text);const details=document.createElement('small');details.textContent=metadata.attributes.filter(a=>['Rarity','Durability bps','Output tier bps','Starter'].includes(a.trait_type)).map(a=>a.trait_type+': '+a.value).join(' · ');card.append(details);$('items').append(card);}
  $('grid').replaceChildren();for(let d=0;d<8;d++){const stable=await uint(modules[7],'gridStability(uint256)',[d]);const card=document.createElement('div');card.className='district';const title=document.createElement('strong');title.textContent='DISTRICT '+d;const value=document.createElement('span');value.textContent='Grid stability '+(Number(stable)/10000).toFixed(2)+'×';card.append(title,value);$('grid').append(card);}
- await loadBoards();
+ if(phases[5])await loadBoards();
 }
 async function loadBoards(){const w=await uint(modules[13],'week()');$('boards').replaceChildren();for(let d=0;d<8;d++){const raw=await call(modules[13],'billboard(uint256,uint256)',[w,d]);const base=Number(words(raw)[0])*2+2;const tuple='0x'+raw.slice(base);const parts=words(tuple);const read=index=>{const at=Number(parts[index])*2+2,len=Number(BigInt('0x'+tuple.slice(at,at+64)));return new TextDecoder().decode(Uint8Array.from(tuple.slice(at+64,at+64+len*2).match(/../g)||[],x=>parseInt(x,16)));};const row=document.createElement('div');row.className='board';row.textContent='District '+d+' · '+(parts[0]?read(2)+' @'+read(3):'Open for your message');$('boards').append(row);}}
 $('registry').value=localStorage.getItem('blackout.registry')||'';
@@ -107,7 +115,7 @@ action('claim',async()=>send(modules[1],'claim(uint256)',[await uint(modules[1],
 action('auto',()=>send(modules[2],'setAutoRepair(bool,uint16)',[true,Number($('threshold').value)*100]));
 action('autoOff',()=>send(modules[2],'setAutoRepair(bool,uint16)',[false,8000]));
 action('roomBuy',async()=>{const room=BigInt($('room').value),price=await uint(modules[10],'roomQuote(address,uint256)',[wallet,room]);await approve(modules[2],price);await send(modules[2],'buyRoom(uint256,bool)',[room,true]);});
-action('repairQuote',async()=>{const id=$('item').value;const [repair,enhance]=await Promise.all([uint(modules[10],'repairQuote(uint256)',[id]),uint(modules[10],'enhanceQuote(uint256)',[id])]);$('quotes').textContent='Repair '+format(repair)+' tokens · Enhance '+format(enhance)+' tokens';});
+action('repairQuote',async()=>{const id=$('item').value;const repair=await uint(modules[10],'repairQuote(uint256)',[id]);let text='Repair '+format(repair)+' tokens';if(phases[3])text+=' · Enhance '+format(await uint(modules[10],'enhanceQuote(uint256)',[id]))+' tokens';$('quotes').textContent=text;});
 action('repair',async()=>{const id=$('item').value;await approve(modules[2],await uint(modules[10],'repairQuote(uint256)',[id]));await send(modules[2],'repair(uint256,bool)',[id,true]);});
 action('enhance',async()=>{const id=$('item').value,price=await uint(modules[10],'enhanceQuote(uint256)',[id]);const state=words(await call(modules[3],'item(uint256)',[id])),target=state[4]+1n;const table=words(await call(modules[11],'table(uint256)',[target]));if(!confirm('Enhance to +'+target+' for '+format(price)+' tokens? Success '+table[0]+'%. Burn chance on failure '+table[1]+'%.'))return;await approve(modules[2],price);const receipt=await send(modules[11],'commit(uint256,uint256,bool)',[id,price,true]);const log=receipt.logs.find(l=>l.address.toLowerCase()===modules[11].toLowerCase()&&l.topics.length===4);if(log)$('enhanceReceipt').value=BigInt(log.topics[1]).toString();});
 action('enhanceResolve',()=>send(modules[11],'resolve(uint256)',[$('enhanceReceipt').value]));

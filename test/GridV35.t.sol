@@ -48,14 +48,18 @@ contract GridV35Test is BaseTest {
         }
     }
 
-    function testReservedEventsHaveZeroLaunchWeightAndCannotBePlanned() public {
+    /// @dev v3.6: reserved kinds never come from the autonomous fallback; the swarm can plan them only
+    /// once Civic feature 7 is enabled (this legacy fixture enables it; PhasedReleaseV36 covers disabled).
+    function testReservedEventsHaveZeroLaunchWeightAndPlanOnlyWhenEnabled() public {
         for (uint256 e = 1; e <= 40; ++e) {
             assertLe(uint256(d.grid.fallbackKind(e)), uint256(GridOperator.Kind.Cheap));
         }
-        vm.expectRevert(InvalidValue.selector);
+        assertTrue(d.civic.enabled(7));
         vm.prank(swarm);
         d.grid.submitPlan(2, GridOperator.Kind.Heatwave, 10000, bytes32(uint256(1)), "Reserved");
-        vm.expectRevert(InvalidValue.selector);
+        vm.prank(swarm);
+        d.grid.submitPlan(3, GridOperator.Kind.Festival, 10000, bytes32(uint256(1)), "Reserved");
+        vm.expectRevert(AlreadyDone.selector);
         vm.prank(swarm);
         d.grid.submitPlan(2, GridOperator.Kind.Festival, 10000, bytes32(uint256(1)), "Reserved");
     }

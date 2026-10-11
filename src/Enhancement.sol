@@ -9,6 +9,10 @@ import {EconomyMath} from "./lib/EconomyMath.sol";
 import {ChainClock} from "./lib/ChainClock.sol";
 import "./lib/Errors.sol";
 
+interface IFeatureFlags {
+    function enabled(uint256) external view returns (bool);
+}
+
 interface IEnhanceCore {
     function level(address) external view returns (uint256);
     function prepareEnhancement(address, uint256, uint256, bool) external;
@@ -66,7 +70,9 @@ contract Enhancement is GameModule, ReentrancyGuard {
         emit CapRaised(cap);
     }
 
+    /// @notice Disabled until Civic feature 3 is enabled (v3.6 phased release).
     function commit(uint256 item, uint256 maxCost, bool wallet) external nonReentrant returns (uint256 id) {
+        if (!IFeatureFlags(registry.module(12)).enabled(3)) revert FeatureDisabled();
         FarmItems.Item memory x = FarmItems(registry.module(3)).data(item);
         IEnhanceCore core = IEnhanceCore(registry.module(2));
         uint8 target = x.overclock + 1;

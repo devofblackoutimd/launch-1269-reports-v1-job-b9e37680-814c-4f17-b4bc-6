@@ -1,4 +1,26 @@
-# BLACKOUT v3.5 implementation report
+# BLACKOUT v3.6 implementation report
+
+Source-only extension of job b29c69c8 (v3.5). No deployment, broadcast, token action or mint. Build configuration and dependencies unchanged. v3.5 behavior is kept except as listed.
+
+## Changes (phased release)
+
+- `Civic` is the feature-flag registry: eight features (0–2 dormant modules unchanged; 3 enhancement, 4 locks + district stake + lobby, 5 billboards, 6 season token pot, 7 reserved Heatwave/Festival plans). Swarm `announce(feature, letter)` once, anyone `enable(feature)` after 48 hours, no disable path exists. `FarmCore` is untouched (24,330 bytes, 246 headroom); checks live in Enhancement.commit, Economy.lock / lobbyQuote (Core's lobby reverts through it), Billboards.bidBillboard, FeeRouter._route (pot share follows v3.4 routing into reward buys while disabled, `potEnabled()` view) and GridOperator.submitPlan (reserved kinds). New error `FeatureDisabled`. `IGameRegistry.registeredModule` exposed so FeeRouter never reverts on an unregistered Civic. Module pins regenerated.
+- Launch core active at launch: packs, ETH zap, gifts, rooms, mining, repair/auto-repair, ordinary events, scrap, free pack, starters, referrals, season best district + lottery, 1% best-farm prize. +12/+16 caps keep the existing announce/activate path.
+- Tests: `test/PhasedReleaseV36.t.sol` (launch-core fixture with nothing enabled): every flag disabled by default and core still mines; each feature reverts `FeatureDisabled` then works after enable; pot routing equals v3.4 while disabled; reserved plans; notice/once/never-off/swarm-only; fuzzed unannounced enable. Legacy fixtures enable 3–7 through the real notice path (`Base.enableFeature`). 223 tests pass, 1 optional fork test skipped; invariants unchanged and passing.
+- Launch kit: `keeper/` (Node 22+, zero dependencies, own keccak/secp256k1/RLP; env file outside the repo; `status`, `once`, `run`, `--dry-run`; systemd unit; README). Signing was smoke-tested against a local anvil (sent transaction confirmed, sender recovered). `launch-v36.md`: ordered checklist and the two application-job objective drafts.
+- Simulation `sim/run_v36.py` → `artifacts/v36/simulation-phases.md`: Balanced core alone (steady/weak/hype/drop50) then each phase. Maintain-only players stay profitable in every phase (steady core: 58.1M tokens mined net of repair, week-1 payback 3.75 days, team 3.58 ETH, 1.8% drawdown; drop50 49.4%). The model holds the 1.4× grower budget fixed, so core-only demand flows into packs/rooms; real willingness to spend without growth features is an open demand question.
+- `ui/`: reads Civic flags; disabled features render as "coming soon" teasers without details; dormant modules never shown.
+
+## Open questions
+
+1. Independent second-contributor review of the v3.6 diff has not happened inside this job; it is required before launch (docs/review-v35-independent.md covers v3.5 only).
+2. Reserved events: v3.5 never allowed planning Heatwave/Festival; v3.6 reads "disabled at launch" as "plannable by the swarm once feature 7 is enabled". Confirm.
+3. Feature enabling after the notice is permissionless (keeper does it); only the announcement is swarm-only. Confirm this matches "the swarm role enables".
+4. Requester-only values remain unsupplied: swarm wallet, launcher/hook identities, Identity MD root/snapshot, allowlist, launch numbers.
+
+---
+
+# BLACKOUT v3.5 implementation report (previous)
 
 Source-only extension of job 3470cfdb. No deployment, broadcast, token action, token replacement or mint was performed. The existing compiler, dependencies and build configuration remain unchanged.
 

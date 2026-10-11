@@ -18,6 +18,10 @@ interface IYieldRewards {
     function lastAverageDaily() external view returns (uint256);
 }
 
+interface IFeatureFlags {
+    function enabled(uint256) external view returns (bool);
+}
+
 interface IEconomyCore {
     function syncFor(address p) external;
 }
@@ -109,7 +113,9 @@ contract Economy is GameModule, ReentrancyGuard {
         return farmDaily(p) * (room == 1 ? 2 : room == 2 ? 5 : 10);
     }
 
+    /// @notice Reverts while Civic feature 4 (locks, district stake, lobby) is disabled, so Core's lobby reverts too.
     function lobbyQuote(address p) external view returns (uint256) {
+        if (!IFeatureFlags(registry.module(12)).enabled(4)) revert FeatureDisabled();
         return farmDaily(p);
     }
 
@@ -124,7 +130,9 @@ contract Economy is GameModule, ReentrancyGuard {
         return uint256(keccak256(abi.encodePacked(p))) % 8;
     }
 
+    /// @notice Disabled until Civic feature 4 is enabled (v3.6 phased release). Unlock is never gated.
     function lock(uint256 amount, uint256 days_) external nonReentrant {
+        if (!IFeatureFlags(registry.module(12)).enabled(4)) revert FeatureDisabled();
         IEconomyCore(registry.module(2)).syncFor(msg.sender);
         if (locks[msg.sender].amount != 0) revert AlreadyDone();
         (uint256 minimum, uint256 bps) = lockQuote(msg.sender, days_);

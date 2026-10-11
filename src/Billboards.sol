@@ -16,6 +16,10 @@ interface ICivicRewards {
     function districtActiveHash(uint256) external view returns (uint256);
 }
 
+interface IFeatureFlags {
+    function enabled(uint256) external view returns (bool);
+}
+
 interface IPurchasePause {
     function paused() external view returns (bool);
 }
@@ -96,6 +100,7 @@ contract Billboards is GameModule, ReentrancyGuard {
         external
         nonReentrant
     {
+        if (!IFeatureFlags(registry.module(12)).enabled(5)) revert FeatureDisabled();
         if (d >= 8) revert InvalidValue();
         _safeText(text_, handle_);
         uint256 w = week() + 1;
