@@ -16,17 +16,10 @@ contract MarketTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("network recipient");
-        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        hook = new TestV4Market(address(manager), address(token), address(d.params), predicted, network);
-        d.fees = new FeeRouter(
-            address(token),
-            address(d.params),
-            address(hook),
-            address(d.pool),
-            address(d.packs),
-            address(d.grid),
-            address(d.rewards)
-        );
+        hook = new TestV4Market(address(manager), address(token), network);
+        d.fees = newFees(address(hook));
+        vm.prank(team);
+        hook.bindFeeRouter(address(d.fees));
         vm.deal(address(manager), 10000 ether);
         token.transfer(address(manager), 10000 ether);
         manager.initializeHook(hook);
@@ -95,7 +88,7 @@ contract MarketTest is BaseTest {
         vm.expectRevert(Unauthorized.selector);
         hook.unlockCallback("");
         vm.expectRevert(InvalidAddress.selector);
-        new V4Market(address(manager), address(token), address(d.params), address(d.fees), network, 0, 60);
+        new V4Market(address(manager), address(token), network, 0, 60);
     }
 
     function testBuyChargesOnlyBaseAndNetworkPullPayment() public {
@@ -103,6 +96,7 @@ contract MarketTest is BaseTest {
         (, int256 delta,) = manager.invokeBefore(hook, p);
         assertEq(uint256(delta >> 128), 0.0225 ether);
         assertEq(hook.networkCredit(), 0.0025 ether);
+        hook.flushFees();
         assertEq(d.fees.credit(team), 0.01 ether);
         hook.withdrawNetwork();
         assertEq(network.balance, 0.0025 ether);

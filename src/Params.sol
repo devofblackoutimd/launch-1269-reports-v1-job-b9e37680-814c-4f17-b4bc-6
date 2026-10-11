@@ -36,17 +36,30 @@ contract Params {
         ExpansionPrice,
         MergePrice,
         OverclockPrice,
-        PositiveWeight
+        PositiveWeight,
+        DripPeriod,
+        MeasureBounty,
+        CreditBounty,
+        AuditBounty,
+        BuyBounty,
+        EntropyBounty,
+        SeasonScoreBounty,
+        SeasonBounty,
+        HeartbeatBps,
+        KeeperGasPrice,
+        HeartbeatCap
     }
     address public immutable swarmWallet;
     mapping(Key => uint256) public get;
     mapping(Key => uint256) public lastChanged;
     event ParamChanged(Key indexed key, uint256 oldValue, uint256 newValue, string letter);
 
-    constructor(address swarm_) {
+    constructor(address swarm_, uint256 heartbeatBps_, uint256 heartbeatCap_) {
         if (swarm_ == address(0)) revert InvalidAddress();
+        if (heartbeatBps_ < 200 || heartbeatBps_ > 5000) revert InvalidValue();
+        if (heartbeatCap_ < 1 ether || heartbeatCap_ > 10 ether) revert InvalidValue();
         swarmWallet = swarm_;
-        uint256[32] memory defaults = [
+        uint256[43] memory defaults = [
             uint256(350),
             1500,
             100,
@@ -78,7 +91,18 @@ contract Params {
             100 ether,
             50 ether,
             100 ether,
-            2500
+            2500,
+            42 days,
+            0.00006 ether,
+            0.00004 ether,
+            0.00001 ether,
+            0.00015 ether,
+            0.00001 ether,
+            0.00001 ether,
+            0.00004 ether,
+            heartbeatBps_,
+            50_000_000,
+            heartbeatCap_
         ];
         for (uint256 i; i < defaults.length; ++i) {
             get[Key(i)] = defaults[i];
@@ -118,7 +142,18 @@ contract Params {
         if (k == Key.ExpansionPrice) return (50 ether, 500 ether);
         if (k == Key.MergePrice) return (25 ether, 250 ether);
         if (k == Key.OverclockPrice) return (50 ether, 500 ether);
-        return (2000, 5000);
+        if (k == Key.PositiveWeight) return (2000, 5000);
+        if (k == Key.DripPeriod) return (14 days, 56 days);
+        if (k == Key.MeasureBounty) return (0.00001 ether, 0.0002 ether);
+        if (k == Key.CreditBounty) return (0.000003 ether, 0.00005 ether);
+        if (k == Key.AuditBounty) return (0.000001 ether, 0.00003 ether);
+        if (k == Key.BuyBounty) return (0.000005 ether, 0.0003 ether);
+        if (k == Key.EntropyBounty) return (0.000002 ether, 0.00005 ether);
+        if (k == Key.SeasonScoreBounty) return (0.000001 ether, 0.00002 ether);
+        if (k == Key.SeasonBounty) return (0.00001 ether, 0.0002 ether);
+        if (k == Key.HeartbeatBps) return (200, 5000);
+        if (k == Key.HeartbeatCap) return (1 ether, 10 ether);
+        return (1_000_000, 100_000_000);
     }
 
     function set(Key k, uint256 next, string calldata letter) external {

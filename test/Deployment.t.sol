@@ -15,7 +15,7 @@ contract DeploymentTest is BaseTest {
         assertEq(d.engine.core(), address(d.farm));
         assertEq(d.fees.rewards(), address(d.rewards));
         assertEq(d.fees.team(), team);
-        address[11] memory all = [
+        address[12] memory all = [
             address(d.params),
             address(d.pool),
             address(d.rewards),
@@ -26,7 +26,8 @@ contract DeploymentTest is BaseTest {
             address(d.fees),
             address(d.grid),
             address(d.season),
-            address(d.engine)
+            address(d.engine),
+            address(d.registry)
         ];
         for (uint256 i; i < all.length; ++i) {
             assertGt(all[i].code.length, 0);
@@ -36,20 +37,33 @@ contract DeploymentTest is BaseTest {
 
     function testConstructorRejectsMissingInputsAndDoesNotCallExternalContracts() public {
         vm.expectRevert(InvalidAddress.selector);
-        new Params(address(0));
-        Params p = new Params(alice);
+        new Params(address(0), 200, 1 ether);
+        Params p = new Params(alice, 200, 1 ether);
         assertEq(p.swarmWallet(), alice);
-        FarmItems items =
-            new FarmItems(alice, bob, makeAddr("empty core"), makeAddr("empty season"), makeAddr("empty engine"));
+        vm.expectRevert(InvalidValue.selector);
+        new Params(alice, 199, 1 ether);
+        vm.expectRevert(InvalidValue.selector);
+        new Params(alice, 5001, 1 ether);
+        Params funded = new Params(alice, 1000, 3 ether);
+        assertEq(funded.get(Params.Key.HeartbeatBps), 1000);
+        assertEq(funded.get(Params.Key.HeartbeatCap), 3 ether);
+        vm.expectRevert(InvalidValue.selector);
+        new Params(alice, 200, 1 ether - 1);
+        vm.expectRevert(InvalidValue.selector);
+        new Params(alice, 200, 10 ether + 1);
+        FarmItems items = new FarmItems(makeAddr("empty registry"));
         assertEq(items.capacity(alice), 15);
         vm.expectRevert(InvalidValue.selector);
-        deployment.deploy(Deploy.Config(address(0), swarm, address(market), launch, keccak256("root"), 123));
+        deployment.deploy(
+            Deploy.Config(address(0), swarm, address(market), launch, keccak256("root"), 123, 0, 200, 1 ether)
+        );
     }
 
     function testForeignCallerDoesNotGetAnyAuthority() public {
         vm.prank(bob);
-        Deploy.Deployment memory fresh =
-            deployment.deploy(Deploy.Config(address(token), swarm, address(market), launch, keccak256("root"), 123));
+        Deploy.Deployment memory fresh = deployment.deploy(
+            Deploy.Config(address(token), swarm, address(market), launch, keccak256("root"), 123, 0, 200, 1 ether)
+        );
         assertEq(fresh.params.swarmWallet(), swarm);
         assertEq(fresh.fees.team(), team);
         assertEq(fresh.pool.rewards(), address(fresh.rewards));

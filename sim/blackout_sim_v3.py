@@ -42,7 +42,7 @@ class Item:
 class Farmer:
     joined:int;district:int;paid:bool;cost:float=0.;xp:int=0;cash:float=0.;held:float=0.;alive:bool=True
     items:list=field(default_factory=list);yields:list=field(default_factory=list);payback:float|None=None
-    gross_week:float=0.;spend_week:float=0.;tickets:int=0;theft_until:int=0;overclock:float=0.
+    wallet:float=0.;gross_week:float=0.;spend_week:float=0.;tickets:int=0;theft_until:int=0;overclock:float=0.
     def equip(self,e,shadow=False):
         lev=level(self.xp);n=4 if lev>=10 else 3 if lev>=7 else 2 if e-self.joined>=12 else 1
         rooms=[[] for _ in range(n)]
@@ -69,10 +69,16 @@ def stats(room,paid,clock=0.,theft=False,shadow=False):
     return raw,effective,effective*(1-saving),kinds
 
 class Model:
-    def __init__(self,scenario,path,seed=20261011,liquidity=10.,bootstrap=0.,pace_policy="reduce"):
+    def __init__(self,scenario,path,seed=20261011,liquidity=10.,bootstrap=0.,pace_policy="reduce",endowment=0.,drip_days=42,single_sided=False,heartbeat_bps=200,claim_lock_days=2,imd_eth=.003451,autonomous=False,heartbeat_cap=1.):
+        self.v31=single_sided;self.autonomous=autonomous
+        self.endowment_fraction=endowment;self.drip_days=drip_days;self.endowment_total=SUPPLY*endowment
+        self.locked=self.endowment_total;self.released=0.;self.claim_lock_days=claim_lock_days
+        self.heartbeat_bps=heartbeat_bps;self.heartbeat_cap=heartbeat_cap;self.heartbeat_in=0.;self.routed_eth=0.;self.bounty_due=0.;self.bounty_shortfall=0.;self.first_shortfall=None
+        self.work_due={};self.work_paid={};self.entropy_count=0;self.swarm_backlog=0.;self.last_unsold=0.
+        self.run_cost=.5*imd_eth;self.run_imd=0.;self.run_eth=0.;self.heartbeat_flows=[]
         self.pace_policy=pace_policy
-        self.scenario,self.path=scenario,path;self.rng=random.Random(seed);self.x=liquidity;self.y=900_000_000.;self.swarm=100_000_000.
-        self.pool=0.;self.redis=0.;self.queue=[];self.farmers=[];self.sold=0;self.reward_eth=0.;self.team=0.;self.heartbeat=0.;self.bounties=0.;self.network=0.;self.external_tokens=0.
+        self.scenario,self.path=scenario,path;self.rng=random.Random(seed);self.x=liquidity*(.9-endowment)/.9;self.y=SUPPLY*(.9-endowment);self.floor_x=self.x;self.initial_y=self.y;self.swarm=100_000_000.
+        self.pool=self.endowment_total if drip_days==0 else 0.;self.locked=0. if drip_days==0 else self.locked;self.redis=0.;self.queue=[];self.farmers=[];self.sold=0;self.reward_eth=0.;self.team=0.;self.heartbeat=0.;self.bounties=0.;self.network=0.;self.external_tokens=0.
         self.emission=.035;self.tariff=.15;self.target=20;self.positive=.25;self.rows=[];self.events=[];self.last_outage=[-100]*8;self.loss_total=0.;self.baseline_total=0.
         self.week_prize=0.;self.week_spend=[0.]*8;self.pack_eth=0.;self.peak=0;self.stall=None;self.tickets={};self.max_error=0.;self.lobbies=[0.]*8
         self.sell_fraction={'steady':.35,'hype':.50,'weak':.65}[scenario];self.holders=900;self.scrap_reserved=0.;self.bootstrap=bootstrap;self.pool+=self.buy(bootstrap)
@@ -80,11 +86,16 @@ class Model:
     def price(self):return self.x/self.y
     def route(self,eth,base=False):
         if base:self.team+=eth*.5;self.reward_eth+=eth*.5;return
-        hb=min(max(0,1-self.heartbeat),eth*.02);self.heartbeat+=hb;self.team+=eth*.13;self.reward_eth+=eth*.87-hb
+        self.routed_eth+=eth
+        hb=min(max(0,self.heartbeat_cap-self.heartbeat),eth*self.heartbeat_bps/10000);self.heartbeat+=hb;self.heartbeat_in+=hb;self.team+=eth*.13;self.reward_eth+=eth*.87-hb
     def buy(self,eth):
         project=.02 if self.path=='custom' else .01;self.route(eth*project,True);self.network+=eth*.0025;net=eth*(1-project-.0025)
         out=self.y*net/(self.x+net);self.x+=net;self.y-=out;return out
     def sell(self,tokens,extra):
+        self.last_unsold=0.
+        if self.v31:
+            fill=min(tokens,max(0.,self.initial_y-self.y))
+            self.last_unsold=tokens-fill;tokens=fill
         gross=self.x*tokens/(self.y+tokens);self.y+=tokens;self.x-=gross;project=.02 if self.path=='custom' else .01
         self.route(gross*project,True);self.route(gross*extra);self.network+=gross*.0025;return gross*(1-project-.0025-extra)
     def demand(self,day):
@@ -104,6 +115,7 @@ class Model:
             else:f.cost+=price;self.pack_eth+=price;self.route(price);self.week_spend[f.district]+=price
             self.sold+=1;f.paid=True;f.xp+=25
         for i in range(3):f.items.append(draw(self.rng,level(f.xp),starter,1 if free and i==0 else 0))
+        self.entropy_count+=1
         return True
     def event(self,e):
         kind=FALLBACK[e%20]
@@ -120,11 +132,24 @@ class Model:
         if kind=='outage':self.last_outage[d]=e
         self.events.append(kind);return kind,d
     def conservation(self):
-        total=self.y+self.swarm+self.pool+self.redis+self.week_prize+self.scrap_reserved+self.external_tokens+sum(f.held for f in self.farmers)+sum(q[2] for q in self.queue)
+        total=self.y+self.swarm+self.pool+self.locked+self.redis+self.week_prize+self.scrap_reserved+self.external_tokens+sum(f.held+f.wallet for f in self.farmers)+sum(q[2] for q in self.queue)
         error=abs(total-SUPPLY);self.max_error=max(self.max_error,error);assert error<.02,(self.scenario,self.path,total)
+    def work(self,kind,units,rate,e,gas=None):
+        due=units*rate
+        if gas is not None:
+            calls=math.ceil(units/.5) if kind=="buy" else units if kind in ("pack_entropy","plan_entropy","season_finalize") else math.ceil(units/(64 if kind=="season_score" else 4))
+            due=min(due,(gas+80000*calls)*20_000_000/1e18*1.25)
+        paid=min(due,self.heartbeat);self.heartbeat-=paid;self.bounties+=paid
+        self.bounty_due+=due;self.bounty_shortfall+=due-paid
+        self.work_due[kind]=self.work_due.get(kind,0.)+due;self.work_paid[kind]=self.work_paid.get(kind,0.)+paid
+        if due-paid>1e-10 and self.first_shortfall is None:self.first_shortfall=e/4
     def run(self):
         for e in range(140):
-            day=e/4;begin_price=self.price;pack_before=self.sold;redis_for_epoch=self.redis;self.redis=0.
+            day=e/4
+            if self.drip_days>0:
+                vested=self.endowment_total*min(1,(e+1)/4/self.drip_days)
+                release=vested-self.released;self.released=vested;self.locked-=release;self.pool+=release
+            begin_price=self.price;pack_before=self.sold;redis_for_epoch=self.redis;self.redis=0.
             # Observed payback influences joining, but does not assume success.
             recent=[f for f in self.farmers if f.paid and f.alive and len(f.yields)>=4]
             forecast=statistics.median([f.cost/max(sum(f.yields[-4:]),1e-12) for f in recent]) if recent else 10.
@@ -141,24 +166,43 @@ class Model:
                     f=Farmer(e,self.rng.randrange(8),False);self.farmers.append(f);self.pack(f,e,starter=True)
             # Holder sales are independent of gameplay, spread over the first fourteen days.
             holder_tokens=100_000_000*self.sell_fraction/56 if e<56 else 0.
+            if self.v31:
+                newly_due=100_000_000*self.sell_fraction/(56-self.claim_lock_days*4) if self.claim_lock_days*4<=e<56 else 0.
+                self.swarm_backlog+=newly_due;holder_tokens=self.swarm_backlog
             due=[q for q in self.queue if q[0]<=e];self.queue=[q for q in self.queue if q[0]>e]
             user_tokens=sum(q[2] for q in due);sell_pressure=(holder_tokens+user_tokens)*self.price
             base=.02 if self.path=='custom' else .01
             extra=0 if self.path=='standard' else min(.15-.0025-base,.05*sell_pressure/(sell_pressure+self.reward_eth+.5)+.04*sell_pressure/(sell_pressure+self.reward_eth+2))
-            if holder_tokens:self.swarm-=holder_tokens;self.sell(holder_tokens,extra)
+            if holder_tokens:
+                self.sell(holder_tokens,extra);filled=holder_tokens-self.last_unsold;self.swarm-=filled
+                if self.v31:self.swarm_backlog=self.last_unsold
             for _,idx,amount,age in due:
-                withheld=amount*tax(age);self.redis+=withheld;self.farmers[idx].cash+=self.sell(amount-withheld,extra)
+                withheld=amount*tax(age);self.redis+=withheld
+                if self.v31:self.farmers[idx].wallet+=amount-withheld
+                else:self.farmers[idx].cash+=self.sell(amount-withheld,extra)
                 f=self.farmers[idx]
                 if f.cash>=f.cost and f.paid and f.payback is None:f.payback=(e-f.joined)/4
+            if self.v31:
+                for f in self.farmers:
+                    if f.wallet:
+                        f.cash+=self.sell(f.wallet,extra);f.wallet=self.last_unsold
+                        if f.cash>=f.cost and f.paid and f.payback is None:f.payback=(e-f.joined)/4
             # External round-trip volume is inventory conserving, with its fees included.
             trade=.5*max(0,self.pack_eth-sum(r['pack_eth'] for r in self.rows))
             if trade:tok=self.buy(trade);self.sell(tok,extra)
             buy_eth=self.reward_eth;self.reward_eth=0.;self.pool+=self.buy(buy_eth)
-            bounty=min(.001,self.heartbeat);self.heartbeat-=bounty;self.bounties+=bounty
-            kind,d=self.event(e);severity=.5 if kind not in ('green','cheap','calm') else 1.;measured=[];total_raw=0.;shadow_records={};shadow_total=0.
+            if self.v31:
+                self.work('advance',1,.001,e)
+                self.work('buy',buy_eth,.00015/.5,e,2000000*math.ceil(buy_eth/.5))
+                self.work('plan_entropy',1,.00001,e,210000)
+                self.work('pack_entropy',self.entropy_count,.00001,e,120000*self.entropy_count);self.entropy_count=0
+                self.run_imd+=.5;self.run_eth+=self.run_cost
+            else:
+                bounty=min(.001,self.heartbeat);self.heartbeat-=bounty;self.bounties+=bounty
+            kind,d=self.event(e);severity=.5 if not self.autonomous and kind not in ('green','cheap','calm') else 1.;measured=[];total_raw=0.;shadow_records={};shadow_total=0.;measure_gas=0;roster=0
             for i,f in enumerate(self.farmers):
                 if not f.alive or f.joined==e:continue
-                rooms=f.equip(e);raw=productive=power=baseline=0.
+                rooms=f.equip(e);roster+=bool(any(rooms));measure_gas+=550000+70000*sum(map(len,rooms));raw=productive=power=baseline=0.
                 shadow_raw=shadow_yield=0.
                 for shadow_room in f.equip(e,True):
                     a,b,_,_=stats(shadow_room,f.paid,f.overclock,shadow=True);shadow_raw+=a;shadow_yield+=b
@@ -183,6 +227,10 @@ class Model:
                     productive+=b;power+=c
                     for it in room:it.health=max(0,it.health-.005)
                 if raw:measured.append((i,raw,productive,power,baseline));total_raw+=raw
+            if self.v31:
+                self.work('measure',roster,.00006,e,measure_gas)
+                self.work('credit',roster,.00004,e,420000*roster+850000)
+                if kind=='audit':self.work('audit',math.ceil(len(measured)/10),.00001,e,100000*math.ceil(len(measured)/10))
             mining=self.pool*self.emission/4;budget=mining*1.16;redis=redis_for_epoch;self.pool-=budget
             top=set(i for i,*_ in sorted(measured,key=lambda x:(-x[1],x[0]))[:math.ceil(len(measured)/10)]) if kind=='audit' else set()
             spent=0.;loss=0.;baseline_value=0.;epoch_net=0.
@@ -216,6 +264,9 @@ class Model:
             self.loss_total+=loss;self.baseline_total+=baseline_value
             if e%28==27:
                 eligible=[f for f in self.farmers if f.tickets];best=max((f for f in eligible if f.gross_week),key=lambda f:f.spend_week/f.gross_week,default=None)
+                if self.v31:
+                    self.work('season_score',len(eligible),.00001,e,20000*len(eligible))
+                    self.work('season_finalize',bool(eligible),.00004,e,600000)
                 if best:best.held+=self.week_prize
                 else:self.pool+=self.week_prize
                 self.week_prize=0.;winning=max(range(8),key=lambda j:self.week_spend[j])
@@ -229,8 +280,9 @@ class Model:
             for j in range(8):self.lobbies[j]*=2**(-.25/3)
             active=sum(f.alive for f in self.farmers);self.peak=max(self.peak,active)
             if day>=3 and self.stall is None and (active<self.peak*.25 or forecast>60):self.stall=round(day,2)
-            if e%4==3:self.emission,self.tariff,self.target,self.positive=controller(self.emission,self.tariff,self.target,self.positive,1/(self.emission*1.16),forecast,loss/max(baseline_value,1e-12),self.pace_policy)
+            if e%4==3 and not self.autonomous:self.emission,self.tariff,self.target,self.positive=controller(self.emission,self.tariff,self.target,self.positive,1/(self.emission*1.16),forecast,loss/max(baseline_value,1e-12),self.pace_policy)
             prior_packs=sum(r['pack_eth'] for r in self.rows)
+            if self.v31:self.heartbeat_flows.append(dict(day=(e+1)/4,income=self.heartbeat_in,routed_eth=self.routed_eth,bounties_due=self.bounty_due,bounties_paid=self.bounties,runs_eth=self.run_eth,headroom=self.heartbeat_in-self.bounty_due-self.run_eth))
             self.rows.append(dict(epoch=e+1,day=(e+1)/4,price=self.price,pool=self.pool,active=active,emission=self.emission,tariff=self.tariff,pack_eth=self.pack_eth-prior_packs,event=kind,severity=severity,loss=loss,baseline=baseline_value,net=epoch_net,forecast=forecast))
             self.conservation()
         cohorts=[]
@@ -245,7 +297,7 @@ class Model:
         weekly_losses=[]
         for w in range(5):
             rows=self.rows[w*28:(w+1)*28];weekly_losses.append(sum(r['loss'] for r in rows)/max(1e-12,sum(r['baseline'] for r in rows)))
-        return dict(scenario=self.scenario,path=self.path,pace_policy=self.pace_policy,holders=900,bootstrap_eth=self.bootstrap,holder_swarm_sale_fraction=self.sell_fraction,cohorts=cohorts,stall_day=self.stall,team_eth=self.team,heartbeat_eth=self.heartbeat,bounties_eth=self.bounties,network_eth=self.network,pool_tokens=self.pool,pack_eth=self.pack_eth,final_price=self.price,final_emission=self.emission,final_tariff=self.tariff,max_weekly_event_loss=max(weekly_losses),weekly_event_losses=weekly_losses,token_conservation_max_error=self.max_error,rows=self.rows)
+        return dict(autonomous=self.autonomous,endowment=self.endowment_fraction,pool_bps=int(round((.9-self.endowment_fraction)*10000)),drip_days=self.drip_days,single_sided=self.v31,opening_cap_eth=10/.9,initial_actual_amm_eth=0 if self.v31 else 10,claim_lock_days=self.claim_lock_days,heartbeat_bps=self.heartbeat_bps,heartbeat_cap=self.heartbeat_cap,heartbeat_income=self.heartbeat_in,routed_eth=self.routed_eth,bounties_due=self.bounty_due,bounty_shortfall=self.bounty_shortfall,first_bounty_shortfall=self.first_shortfall,work_due=self.work_due,work_paid=self.work_paid,swarm_runs_imd=self.run_imd,swarm_runs_eth=self.run_eth,heartbeat_flows=self.heartbeat_flows,locked_endowment=self.locked,swarm_unsold=self.swarm,players_unsold=sum(f.wallet for f in self.farmers),scenario=self.scenario,path=self.path,pace_policy=self.pace_policy,starter_entitlements=900,contributor_agents=900,bootstrap_eth=self.bootstrap,swarm_sale_fraction=self.sell_fraction,cohorts=cohorts,stall_day=self.stall,team_eth=self.team,heartbeat_eth=self.heartbeat,bounties_eth=self.bounties,network_eth=self.network,pool_tokens=self.pool,pack_eth=self.pack_eth,final_price=self.price,final_emission=self.emission,final_tariff=self.tariff,max_weekly_event_loss=max(weekly_losses),weekly_event_losses=weekly_losses,token_conservation_max_error=self.max_error,rows=self.rows)
 
 def report(results):
     lines=['# BLACKOUT v3 simulation — 35 days, 140 six-hour epochs','',f"Explicit initial reward-pool buy capital: {results[0]['bootstrap_eth']:.1f} ETH; pace policy: {results[0]['pace_policy']}. This is a scenario input, not an authorized or funded transaction.",'',
@@ -254,7 +306,7 @@ def report(results):
       '|---|---|---:|---:|---:|---:|---:|---:|---:|']
     for r in results:
         c=r['cohorts'][0];pb='not reached' if c['all_farms_median'] is None else f"{c['all_farms_median']:.2f}d"
-        lines.append(f"| {r['scenario']} | {r['path']} | {r['holder_swarm_sale_fraction']:.0%} | {pb} | {c['realized_fraction']:.1%} | {r['stall_day'] if r['stall_day'] is not None else '>35'} | {r['team_eth']:.4f} | {r['heartbeat_eth']:.4f} / {r['bounties_eth']:.4f} | {r['max_weekly_event_loss']:.2%} |")
+        lines.append(f"| {r['scenario']} | {r['path']} | {r['swarm_sale_fraction']:.0%} | {pb} | {c['realized_fraction']:.1%} | {r['stall_day'] if r['stall_day'] is not None else '>35'} | {r['team_eth']:.4f} | {r['heartbeat_eth']:.4f} / {r['bounties_eth']:.4f} | {r['max_weekly_event_loss']:.2%} |")
     lines+=['','Payback is cash withdrawn after tax and market fees. Whole-cohort medians treat unrepaid farms as right-censored; not reached means at least half have not repaid within the run. Conditional realized medians include only farms repaid and must be read with their fraction. Estimated medians combine realized results with constant-last-day-yield projections for surviving unpaid farms; they exclude quitters without payback and are **not** realized results. Week 5 is heavily right-censored.','', '| Scenario / path | Join week | Paid farms | Whole-cohort median days | Conditional realized median days | Repaid fraction | Repaid within10d | Estimated median days |','|---|---:|---:|---:|---:|---:|---:|---:|']
     for r in results:
         for c in r['cohorts']:

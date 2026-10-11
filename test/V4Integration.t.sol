@@ -30,12 +30,8 @@ contract V4IntegrationTest is BaseTest {
         vm.deal(address(this), 10000 ether);
         network = makeAddr("integration network");
         manager = RealManager(address(new PoolManager(address(this))));
-        address predictedRouter = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         bytes memory code = abi.encodePacked(
-            type(V4Market).creationCode,
-            abi.encode(
-                address(manager), address(token), address(d.params), predictedRouter, network, uint24(0), int24(60)
-            )
+            type(V4Market).creationCode, abi.encode(address(manager), address(token), network, uint24(0), int24(60))
         );
         bytes32 hash = keccak256(code);
         bytes32 salt;
@@ -44,19 +40,10 @@ contract V4IntegrationTest is BaseTest {
             address target = vm.computeCreate2Address(salt, hash, address(this));
             if (uint160(target) & 0x3fff == 0x10cc) break;
         }
-        hook = new V4Market{salt: salt}(
-            address(manager), address(token), address(d.params), predictedRouter, network, 0, 60
-        );
-        router = new FeeRouter(
-            address(token),
-            address(d.params),
-            address(hook),
-            address(d.pool),
-            address(d.packs),
-            address(d.grid),
-            address(d.rewards)
-        );
-        assertEq(address(router), predictedRouter);
+        hook = new V4Market{salt: salt}(address(manager), address(token), network, 0, 60);
+        router = newFees(address(hook));
+        vm.prank(team);
+        hook.bindFeeRouter(address(router));
         manager.initialize(hook.key(), uint160(1 << 96));
         manager.unlock(abi.encode(uint8(0), uint256(1000 ether)));
         vm.warp(vm.getBlockTimestamp() + 31 minutes);
@@ -100,6 +87,7 @@ contract V4IntegrationTest is BaseTest {
         manager.unlock(abi.encode(uint8(1), uint256(1 ether)));
         assertEq(before - address(this).balance, 1 ether);
         assertEq(hook.networkCredit(), 0.0025 ether);
+        hook.flushFees();
         assertEq(router.credit(team), 0.01 ether);
         uint256 oldCredit = hook.networkCredit();
         uint256 oldPrice = hook.lastPrice();
@@ -128,5 +116,37 @@ contract V4IntegrationTest is BaseTest {
         manager.unlock(abi.encode(uint8(2), uint256(100 ether)));
         assertEq(hook.quote(1 ether), quote);
         assertGt(hook.lastPrice(), quote);
+    }
+
+    function testRealV4SmallBuyPaysPositiveKeeperMargin() public {
+        vm.deal(address(d.packs), 1 ether);
+        vm.prank(address(d.packs));
+        router.depositPack{value: 1 ether}();
+        uint256 q = hook.quote(0.2 ether) * 97 / 100;
+        uint256 beforeCredit = router.credit(address(this));
+        uint256 start = gasleft();
+        router.executeBuys(0.2 ether, q);
+        uint256 used = start - gasleft();
+        uint256 paid = router.credit(address(this)) - beforeCredit;
+        emit log_named_uint("real V4 0.2ETH buy gas", used);
+        emit log_named_uint("real V4 buy bounty wei", paid);
+        assertGt(paid, (used + 21000) * tx.gasprice);
+    }
+
+    function testSystemBuybackOffsetsRecordedSellImbalance() public {
+        manager.unlock(abi.encode(uint8(2), uint256(0.1 ether)));
+        (uint256 hourBefore, uint256 dayBefore) = hook.imbalances();
+        assertGt(hourBefore, 0);
+        assertGt(dayBefore, 0);
+
+        router.depositBaseFee{value: 1 ether}();
+        uint256 beforePool = token.balanceOf(address(d.pool));
+        router.executeBuys(0.5 ether, hook.quote(0.5 ether) * 97 / 100);
+        assertGt(token.balanceOf(address(d.pool)), beforePool);
+
+        // 0.48875 ETH of pool buy input exceeds the preceding ~0.1 ETH sell output.
+        (uint256 hourAfter, uint256 dayAfter) = hook.imbalances();
+        assertEq(hourAfter, 0, "real buyback must offset recorded hourly sell pressure");
+        assertEq(dayAfter, 0, "real buyback must offset recorded daily sell pressure");
     }
 }

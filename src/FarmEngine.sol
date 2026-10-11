@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GameModule} from "./lib/GameModule.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {FarmItems} from "./FarmItems.sol";
 import {Params} from "./Params.sol";
@@ -9,7 +10,7 @@ import {ItemMath} from "./lib/ItemMath.sol";
 import "./lib/Errors.sol";
 
 /// @notice Immutable room/event calculator. Only Core may apply damage; no delegatecall or upgrades.
-contract FarmEngine {
+contract FarmEngine is GameModule {
     struct Snapshot {
         uint256[24] ids;
         uint8[24] clocks;
@@ -31,28 +32,31 @@ contract FarmEngine {
         bool locked;
         bool airflow;
     }
-    FarmItems public immutable items;
-    Params public immutable params;
-    IRewards public immutable rewards;
-    GridOperator public immutable grid;
-    address public immutable core;
 
-    constructor(address items_, address params_, address rewards_, address grid_, address core_) {
-        if (
-            items_ == address(0) || params_ == address(0) || rewards_ == address(0) || grid_ == address(0)
-                || core_ == address(0)
-        ) {
-            revert InvalidAddress();
-        }
-        items = FarmItems(items_);
-        params = Params(params_);
-        rewards = IRewards(rewards_);
-        grid = GridOperator(grid_);
-        core = core_;
+    constructor(address registry_) GameModule(registry_) {}
+
+    function items() public view returns (FarmItems) {
+        return FarmItems(registry.module(3));
+    }
+
+    function params() public view returns (Params) {
+        return Params(registry.params());
+    }
+
+    function rewards() public view returns (IRewards) {
+        return IRewards(registry.module(1));
+    }
+
+    function grid() public view returns (GridOperator) {
+        return GridOperator(registry.module(7));
+    }
+
+    function core() public view returns (address) {
+        return registry.module(2);
     }
 
     function _param(Params.Key k, bool active, uint256 e) private view returns (uint256) {
-        return active ? rewards.epochParam(e, uint256(k)) : params.get(k);
+        return active ? rewards().epochParam(e, uint256(k)) : params().get(k);
     }
 
     function stats(Snapshot memory f, uint256 room, bool active, uint256 e) public view returns (RoomStats memory s) {
@@ -79,7 +83,7 @@ contract FarmEngine {
         for (uint256 i; i < 6; ++i) {
             uint256 id = f.ids[room * 6 + i];
             if (id == 0) continue;
-            FarmItems.Item memory x = items.data(id);
+            FarmItems.Item memory x = items().data(id);
             if (x.holder != address(0)) mask |= 1 << x.kind;
         }
         s.cooling = mask & ((1 << 6) | (1 << 7)) != 0;
@@ -92,7 +96,7 @@ contract FarmEngine {
             uint256 idx = room * 6 + i;
             uint256 id = f.ids[idx];
             if (id == 0) continue;
-            FarmItems.Item memory x = items.data(id);
+            FarmItems.Item memory x = items().data(id);
             if (x.holder == address(0)) continue;
             if (x.kind == 8 && e < f.theftUntil && !s.locked) continue;
             tags |= 1 << ItemMath.tag(x.kind);
@@ -125,8 +129,8 @@ contract FarmEngine {
         external
         returns (uint256 raw, uint256 productive, uint256 power, uint64 theftUntil)
     {
-        if (msg.sender != core) revert Unauthorized();
-        (GridOperator.Kind kind, uint16 severity, uint8 d, bytes32 seed, bool resolved) = grid.eventAt(e);
+        if (msg.sender != core()) revert Unauthorized();
+        (GridOperator.Kind kind, uint16 severity, uint8 d, bytes32 seed, bool resolved) = grid().eventAt(e);
         if (!resolved) revert TooEarly();
         uint256 random = uint256(keccak256(abi.encode(seed, p)));
         bool local = uint256(keccak256(abi.encodePacked(p))) % 8 == d;
@@ -154,12 +158,12 @@ contract FarmEngine {
                 uint256 idx = r * 6 + i;
                 uint256 id = f.ids[idx];
                 if (id == 0) continue;
-                FarmItems.Item memory x = items.data(id);
+                FarmItems.Item memory x = items().data(id);
                 if (x.holder == address(0)) continue;
                 uint256 damage;
                 if (surge && cursor == target && !before_.clean) {
                     if ((random >> 128) % 100 < 2 && x.rarity < 3) {
-                        items.destroy(id);
+                        items().destroy(id);
                         f.ids[idx] = 0;
                         cursor++;
                         continue;
@@ -170,7 +174,7 @@ contract FarmEngine {
                     damage += 3000 * uint256(severity) / 10000 / (before_.airflow ? 2 : 1);
                 }
                 f.health[idx] = uint16(f.health[idx] > damage ? f.health[idx] - damage : 0);
-                items.maintain(id, uint16(x.durability > damage ? x.durability - damage : 0), x.overclock);
+                items().maintain(id, uint16(x.durability > damage ? x.durability - damage : 0), x.overclock);
                 cursor++;
             }
             RoomStats memory s = stats(f, r, true, e);
@@ -191,8 +195,8 @@ contract FarmEngine {
             for (uint256 i; i < 6; ++i) {
                 uint256 id = f.ids[r * 6 + i];
                 if (id == 0) continue;
-                FarmItems.Item memory x = items.data(id);
-                items.maintain(id, x.durability > 50 ? x.durability - 50 : 0, x.overclock);
+                FarmItems.Item memory x = items().data(id);
+                items().maintain(id, x.durability > 50 ? x.durability - 50 : 0, x.overclock);
             }
         }
         theftUntil = f.theftUntil;

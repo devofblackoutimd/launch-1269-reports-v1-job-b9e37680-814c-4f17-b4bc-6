@@ -6,6 +6,7 @@ import {StandardAdapter} from "../src/StandardAdapter.sol";
 import {MockStandardTwap} from "./StandardAdapter.t.sol";
 import {StandardMarket} from "../src/StandardMarket.sol";
 import {V4Market} from "../src/V4Market.sol";
+import {MockGameRegistry} from "./mocks/MockGameRegistry.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {IV4PoolManager, PoolKey, SwapParams} from "../src/interfaces/IV4.sol";
 
@@ -38,12 +39,10 @@ contract StandardV4IntegrationTest is BaseTest {
         network = makeAddr("integration network");
         manager = StandardRealManager(address(new PoolManager(address(this))));
         oracle = new MockStandardTwap();
-        address predictedRouter = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 2);
+        router = newFees(makeAddr("pending integration adapter"));
         bytes memory code = abi.encodePacked(
             type(StandardMarket).creationCode,
-            abi.encode(
-                address(manager), address(token), address(d.params), predictedRouter, network, uint24(0), int24(60)
-            )
+            abi.encode(address(manager), address(token), network, uint24(0), int24(60))
         );
         bytes32 hash = keccak256(code);
         bytes32 salt;
@@ -52,21 +51,12 @@ contract StandardV4IntegrationTest is BaseTest {
             address target = vm.computeCreate2Address(salt, hash, address(this));
             if (uint160(target) & 0x3fff == 0x10cc) break;
         }
-        hook = new StandardMarket{salt: salt}(
-            address(manager), address(token), address(d.params), predictedRouter, network, 0, 60
-        );
+        hook = new StandardMarket{salt: salt}(address(manager), address(token), network, 0, 60);
         adapter =
-            new StandardAdapter(address(manager), address(token), address(oracle), predictedRouter, address(hook), 60);
-        router = new FeeRouter(
-            address(token),
-            address(d.params),
-            address(adapter),
-            address(d.pool),
-            address(d.packs),
-            address(d.grid),
-            address(d.rewards)
-        );
-        assertEq(address(router), predictedRouter);
+            new StandardAdapter(address(manager), address(token), address(oracle), address(router), address(hook), 60);
+        MockGameRegistry(address(router.registry())).setMarket(address(adapter));
+        vm.prank(team);
+        hook.bindFeeRouter(address(router));
         manager.initialize(hook.key(), uint160(1 << 96));
         manager.unlock(abi.encode(uint8(0), uint256(1000 ether)));
         vm.warp(vm.getBlockTimestamp() + 31 minutes);
@@ -113,6 +103,7 @@ contract StandardV4IntegrationTest is BaseTest {
         uint256 teamBefore = router.credit(team);
         router.executeBuys(0.5 ether, 0.485 ether);
         assertGe(token.balanceOf(address(d.pool)) - poolBefore, 0.485 ether);
+        if (hook.heldBase() != 0) hook.flushFees();
         assertEq(router.credit(team) - teamBefore, 0.0025 ether);
         assertEq(router.rewardETH(), 0.0025 ether);
         assertEq(hook.networkCredit(), 0.00125 ether);

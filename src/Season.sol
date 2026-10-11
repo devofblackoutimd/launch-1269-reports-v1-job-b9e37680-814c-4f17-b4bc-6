@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {FeeRouter} from "./FeeRouter.sol";
+import {Params} from "./Params.sol";
 import {FarmItems} from "./FarmItems.sol";
 import {IRewards, ICore} from "./interfaces/IGame.sol";
 import {ChainClock} from "./lib/ChainClock.sol";
@@ -13,7 +16,7 @@ interface IPrizePacks {
 }
 
 /// @notice Weekly tickets are active epochs, stored in a bounded 32-level sum tree.
-contract Season is ReentrancyGuard {
+contract Season is GameModule, ReentrancyGuard {
     struct Week {
         uint256[8] districtSpend;
         uint256 participants;
@@ -26,12 +29,7 @@ contract Season is ReentrancyGuard {
         uint256 bestScore;
         bytes32 seed;
     }
-    IRewards public immutable rewards;
-    ICore public immutable core;
-    FarmItems public immutable items;
-    IPrizePacks public immutable packs;
-    address public immutable grid;
-    uint256 public immutable launchTime;
+
     mapping(uint256 => Week) private seasons;
     mapping(uint256 => mapping(address => uint256)) public spend;
     mapping(uint256 => mapping(address => uint256)) public yield;
@@ -46,17 +44,34 @@ contract Season is ReentrancyGuard {
     event SeasonFinalized(uint256 indexed week, uint256 district, address best, bytes32 seed);
     event LotteryWinner(uint256 indexed week, address indexed player);
 
-    constructor(address rewards_, address core_, address items_, address packs_, address grid_, uint256 launch_) {
-        if (
-            rewards_ == address(0) || core_ == address(0) || items_ == address(0) || packs_ == address(0)
-                || grid_ == address(0) || launch_ == 0
-        ) revert InvalidValue();
-        rewards = IRewards(rewards_);
-        core = ICore(core_);
-        items = FarmItems(items_);
-        packs = IPrizePacks(packs_);
-        grid = grid_;
-        launchTime = launch_;
+    constructor(address registry_) GameModule(registry_) {}
+
+    function rewards() public view returns (IRewards) {
+        return IRewards(registry.module(1));
+    }
+
+    function core() public view returns (ICore) {
+        return ICore(registry.module(2));
+    }
+
+    function items() public view returns (FarmItems) {
+        return FarmItems(registry.module(3));
+    }
+
+    function packs() public view returns (IPrizePacks) {
+        return IPrizePacks(registry.module(4));
+    }
+
+    function grid() public view returns (address) {
+        return registry.module(7);
+    }
+
+    function fees() public view returns (FeeRouter) {
+        return FeeRouter(payable(registry.module(6)));
+    }
+
+    function launchTime() public view returns (uint256) {
+        return registry.launchTime();
     }
 
     function district(address p) private pure returns (uint256) {
@@ -64,9 +79,9 @@ contract Season is ReentrancyGuard {
     }
 
     function recordSpend(address p, uint256 value, bool districtSpend) external {
-        if (msg.sender != address(core) && msg.sender != grid) revert Unauthorized();
-        if (block.timestamp < launchTime) revert TooEarly();
-        uint256 w = (block.timestamp - launchTime) / 7 days;
+        if (msg.sender != address(core()) && msg.sender != grid()) revert Unauthorized();
+        if (block.timestamp < launchTime()) revert TooEarly();
+        uint256 w = (block.timestamp - launchTime()) / 7 days;
         spend[w][p] += value;
         if (districtSpend) seasons[w].districtSpend[district(p)] += value;
     }
@@ -81,7 +96,7 @@ contract Season is ReentrancyGuard {
     }
 
     function recordActivity(address p, uint256 w, uint256 gross) external {
-        if (msg.sender != address(rewards)) revert Unauthorized();
+        if (msg.sender != address(rewards())) revert Unauthorized();
         Week storage s = seasons[w];
         uint256 i = index[w][p];
         if (i == 0) {
@@ -98,16 +113,18 @@ contract Season is ReentrancyGuard {
     }
 
     function addPrize(uint256 w, uint256 amount) external {
-        if (msg.sender != address(rewards)) revert Unauthorized();
+        if (msg.sender != address(rewards())) revert Unauthorized();
         seasons[w].prize += amount;
     }
     mapping(uint256 => uint256) public scoreCursor;
 
-    function prepare(uint256 w, uint256 limit) external {
-        if (!rewards.seasonReady(w) || limit == 0 || limit > 64) revert TooEarly();
+    function prepare(uint256 w, uint256 limit) external nonReentrant {
+        uint256 startGas = gasleft();
+        if (!rewards().seasonReady(w) || limit == 0 || limit > 64) revert TooEarly();
         Week storage s = seasons[w];
         if (s.target != 0) revert AlreadyDone();
         uint256 cursor = scoreCursor[w];
+        uint256 before_ = cursor;
         for (uint256 n; n < limit && cursor < s.participants; ++n) {
             address p = participant[w][++cursor];
             uint256 earned = yield[w][p];
@@ -119,6 +136,9 @@ contract Season is ReentrancyGuard {
             }
         }
         scoreCursor[w] = cursor;
+        if (cursor > before_) {
+            fees().payWork(msg.sender, Params.Key.SeasonScoreBounty, cursor - before_, startGas - gasleft());
+        }
         if (cursor == s.participants) {
             s.target = uint64(ChainClock.number() + 2);
             emit SeasonPrepared(w, s.target);
@@ -140,6 +160,7 @@ contract Season is ReentrancyGuard {
     }
 
     function finalize(uint256 w) external nonReentrant {
+        uint256 startGas = gasleft();
         Week storage s = seasons[w];
         if (s.finalized) revert AlreadyDone();
         if (s.target == 0 || ChainClock.number() <= s.target) revert TooEarly();
@@ -160,9 +181,10 @@ contract Season is ReentrancyGuard {
             emit LotteryWinner(w, winner);
         }
         if (s.prize != 0) {
-            if (s.best != address(0)) rewards.award(s.best, s.prize);
-            else rewards.releasePrize(s.prize);
+            if (s.best != address(0)) rewards().award(s.best, s.prize);
+            else rewards().releasePrize(s.prize);
         }
+        if (s.participants != 0) fees().payWork(msg.sender, Params.Key.SeasonBounty, 1, startGas - gasleft());
         emit SeasonFinalized(w, s.winnerDistrict, s.best, s.seed);
     }
 
@@ -189,7 +211,7 @@ contract Season is ReentrancyGuard {
                 || districtClaimed[w][msg.sender]
         ) revert InvalidValue();
         districtClaimed[w][msg.sender] = true;
-        id = packs.rewardPack(msg.sender);
+        id = packs().rewardPack(msg.sender);
     }
 
     function claimLottery(uint256 w) external nonReentrant returns (uint256 id) {
@@ -198,6 +220,6 @@ contract Season is ReentrancyGuard {
         bytes32 seed = keccak256(abi.encode(seasons[w].seed, msg.sender));
         (uint8 k,) = ItemMath.draw(seed, false, false);
         uint8 r = uint256(seed) % 100 < 90 ? 2 : 3;
-        id = items.mint(msg.sender, k, r, false);
+        id = items().mint(msg.sender, k, r, false);
     }
 }

@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 import {BaseTest} from "./Base.t.sol";
 import {StandardAdapter, IStandardTwap} from "../src/StandardAdapter.sol";
 import {MockV4Manager} from "./mocks/MockV4Manager.sol";
+import {MockGameRegistry} from "./mocks/MockGameRegistry.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import "../src/lib/Errors.sol";
 
@@ -38,20 +39,11 @@ contract StandardAdapterTest is BaseTest {
         super.setUp();
         oracle = new MockStandardTwap();
         manager = new MockV4Manager();
-        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        fees = newFees(makeAddr("pending test adapter"));
         adapter = new StandardAdapter(
-            address(manager), address(token), address(oracle), predicted, makeAddr("existing standard hook"), 60
+            address(manager), address(token), address(oracle), address(fees), makeAddr("existing standard hook"), 60
         );
-        fees = new FeeRouter(
-            address(token),
-            address(d.params),
-            address(adapter),
-            address(d.pool),
-            address(d.packs),
-            address(d.grid),
-            address(d.rewards)
-        );
-        assertEq(address(fees), predicted);
+        MockGameRegistry(address(fees.registry())).setMarket(address(adapter));
         oracle.configure(adapter.poolId(), block.timestamp, 30 minutes);
         token.transfer(address(manager), 100 ether);
     }

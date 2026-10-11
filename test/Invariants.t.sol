@@ -85,6 +85,10 @@ contract InvariantsTest is BaseTest {
         place(bob, 0, 0, 0);
         handler = new GameHandler(d, alice, bob);
         targetContract(address(handler));
+        // Only real player EOAs originate transactions. Fuzzing protocol addresses as
+        // senders auto-funds those addresses and invalidates exact ETH conservation.
+        targetSender(alice);
+        targetSender(bob);
     }
 
     function invariantTokenConservationNoBurns() public view {
@@ -115,7 +119,7 @@ contract InvariantsTest is BaseTest {
     function invariantPriceAndParamsBounds() public view {
         assertGe(d.packs.price(), d.params.get(Params.Key.PriceFloor));
         assertLe(d.packs.price(), d.params.get(Params.Key.PriceCeiling));
-        for (uint256 i; i < 32; ++i) {
+        for (uint256 i; i < 43; ++i) {
             Params.Key k = Params.Key(i);
             (uint256 low, uint256 high) = d.params.bounds(k);
             assertGe(d.params.get(k), low);

@@ -1,62 +1,39 @@
-# BLACKOUT v3
+# BLACKOUT v3.1
 
-Immutable, ownerless game contracts for the existing IMD launch token. **No deployment, broadcast, token creation, replacement, or ERC-20 mint occurred in this assignment.** The build configuration and vendored dependencies are unchanged.
+Immutable token-endowed mining game on the existing v3 codebase. No deployment, broadcast, token creation/replacement or live spending occurred. Build settings and dependencies are unchanged.
 
-Read [report.md](report.md) for implementation changes, parameters, economic outcomes and remaining launch decisions; [regulator.md](regulator.md) for operating rules; [design](docs/design.md) for accounting and gameplay; and [security review](docs/security-review.md) for the independent contributor's findings and repairs.
+[Report](report.md) contains the endowment comparison, target misses and recommended parameters. [Launch procedure](docs/launch-v31.md) specifies the custom hook followed by two application launches of 8+4 contracts. [Regulator](regulator.md) describes keeper and manual IMD responsibilities. [Fresh review](docs/review-v31.md) records findings and repairs. Historical v3 results are preserved in [docs/report-v3.md](docs/report-v3.md), not the v3.1 economic baseline.
 
-## Reproduce
-
-Foundry uses the existing pinned Solidity **0.8.26**, Cancun, optimizer and via-IR configuration. Dependencies are already ordinary repository files; no network is needed for the default checks once that compiler is installed.
+## Reproduce offline
 
 ```sh
 forge build
 forge test
 forge fmt --check
-python3 sim/blackout_sim_v3.py --check
+python3 tools/pin_module_code.py --check
 python3 -m unittest discover -s test/python -v
-python3 sim/blackout_sim_v3.py
+python3 sim/blackout_sim_v3.py --check
+python3 sim/blackout_sim_v31.py --output artifacts/v31/final
+python3 sim/heartbeat_sweep_v31.py --bps 3100 --cap 4.5 --all --stress --output artifacts/v31/funded
+python3 sim/candidate_stress_v31.py
+python3 sim/heartbeat_boundaries_v31.py
+python3 tools/report_v31.py
 python3 tools/regulator.py --example
 ```
 
-The optional live Robinhood smoke test uses the public RPC explicitly:
+The compiler is the existing pinned 0.8.26, viaIR, Cancun. Vendored dependencies are ordinary files. No RPC or environment variables are needed by the default suite. The optional Robinhood smoke test skips offline and can be run separately with the explicit public RPC; no live deployment is performed by it.
 
-```sh
-forge test --fork-url https://rpc.mainnet.chain.robinhood.com --match-contract RobinhoodForkTest -vv
-```
+## Accounting and authority
 
-It is skipped in the offline suite on other chains. It reads native ArbSys block numbering/hash on chain 4663, then replays those results into Foundry's EVM, which does not implement ArbOS. This is a chain primitive smoke test, not a deployment or a full test against the future token/pool. Real vendored Uniswap v4 PoolManager integration is tested locally for both market paths.
+The one-time endowment is 100–250 million of the existing billion tokens. The pool locks it before activation and then releases principal linearly over 14–56 days (default 42). Activation fixes the period permanently. Released funds remain subject to ordinary mining reservations and player claims. No donor, owner, team or swarm withdrawal exists.
 
-## Immutable application graph
+Ten modules use a permanent `GameRegistry`. Anyone can register exact, compiler-pinned module bytecode deployed with that registry constructor argument by the verified application factory; each role is write-once. There is no replaceable implementation, delegatecall or upgrade. Constructors make no external calls. `Params(swarmWallet,initialHeartbeatBps,initialHeartbeatCapWei)` allows only bounded numeric changes after deployment, with 10% maximum movement per key per 24 hours and a public letter.
 
-`script/Deploy.s.sol:deploy(Config)` is a **local construction helper**, tested with explicit inputs. It does not read the environment or broadcast. Its eleven deployments, in order, are Params, RewardPool, FarmRewards, FarmCore, FarmItems, PackSale, StarterClaim, FeeRouter, GridOperator, Season, FarmEngine. The helper predicts its own CREATE nonces so circular immutable references agree. It is not a deployable on-chain factory; its large script bytecode is not an application contract. A launch system must reproduce its own complete creator/nonce address plan.
+The custom hook is a standalone five-argument source at `launch/V4Market.sol`. It escrows ETH fees before the game exists. Only the fixed team address `0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007` may bind FeeRouter, once. Flushing fees afterward is permissionless. This is the hook's only privileged action. Network and project credits remain separate.
 
-The six required configuration fields are:
+Only new paid purchases in PackSale may be paused by the swarm, at most 72 hours per pause, with automatic timestamp expiry and a 72 hour live interval before another pause. Existing pack resolutions, claims, withdrawals, epoch advancement and all keeper work remain callable.
 
-| Field | Supplied by launch operator |
-|---|---|
-| `token` | Actual existing launch ERC-20; 18 decimals, plain transfers, no rebasing or transfer tax. |
-| `swarmWallet` | Actual immutable Grid Operator address. It controls bounded numbers and event plans only. |
-| `market` | Verified custom `V4Market`, or `StandardAdapter` for the actual standard IMD hook and oracle. |
-| `launchTime` | Actual token-launch timestamp, used for starter window, VRGDA and calendar seasons. |
-| `starterRoot` | Root of actual Identity MD tokenId/holder snapshot at launch; publish source and proofs. |
-| `snapshotBlock` | Actual snapshot block represented by that root; reconcile chain/time if collection and token differ in chain. |
-
-No addresses, roots, keys or IDs for the eventual deployment are guessed. Tests contain explicitly test-only mocks and identities. The fixed team is `0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007`; there is no team-change setter. Heartbeat ETH funds permissionless epoch callers, rather than a configured recipient.
-
-Application constructors have at most eleven inputs, check missing inputs locally, and do not call external contracts. All external services and immutable wiring must be validated before launch; no owner can repair configuration afterward. The engine is a separate immutable calculation contract, not a delegatecall module or upgrade point.
-
-## Choose exactly one swap-fee integration
-
-| Path | Project fee | Network | Progressive surcharge | Required integration |
-|---|---:|---:|---|---|
-| Preferred custom | 2%: 1% team, 1% pool-buy | 0.25% | Sell only; total fee capped at 15% | Launch explicitly supports `V4Market` as its combined hook. |
-| Standard fallback | 1%: 0.5% team, 0.5% pool-buy | 0.25% | None | Existing IMD hook forwards its 1% project ETH to `FeeRouter`; `StandardAdapter` buys through that exact hook. |
-
-`StandardMarket` is an executable reference implementation for the fallback fee schedule, including tests. It is **not** a replacement for a platform hook when custom hooks are disallowed. `StandardAdapter` is the actual integration adapter for that situation. Its constructor takes manager, token, 30-minute oracle, FeeRouter, existing standard hook and tick spacing. The oracle implements `consult(poolId)` with token units per ETH, last observation time and observation window; the adapter rejects zero, stale, future or short-window results. The real oracle implementation/address is a launch prerequisite and must be checked independently.
-
-Custom `V4Market` requires PoolManager, token, Params, FeeRouter, actual network recipient, zero LP fee and tick spacing. `MarketFactory` is a permissionless CREATE2 helper for address flags `0x10cc`; `script/DeployMarket.s.sol` takes explicit arguments and has no broadcast path. Only exact-input swaps are supported. PoolManager protocol/LP fees must not add fees outside the disclosed cap. Do not layer project fees on another fee-charging hook.
-
-Resolve custom market/game address dependencies before deployment; initialize native ETH/token liquidity and allow **31 minutes** of observed history before its 30-minute TWAP quotes. The standard path requires an independently verified 30-minute source for the exact pool. No live hook support or final market address has been asserted here.
+Keepers earn pull credits for useful epoch, settlement, audit, entropy, buyback and weekly work. Measured gas reimbursement has a 25% margin, a gas-price ceiling, per-unit hard caps and a heartbeat-balance cap. Empty/replayed work earns nothing. ETH cannot directly buy IMD heartbeat runs; an external payer tops those up and public bots monitor fast entropy deadlines.
 
 ## Client sequence
 
@@ -70,8 +47,5 @@ Resolve custom market/game address dependencies before deployment; initialize na
 
 Snapshot tooling is retained: `python3 tools/starter_merkle.py owners.csv --snapshot-block BLOCK --collection ADDRESS`. Leaves are `keccak256(abi.encode(uint256 tokenId,address holder))`, with sorted pairs. This attests snapshot ownership; it does not bridge collection state on demand. Publish the actual collection identity and snapshot provenance with the root.
 
-## After launch
 
-The launch operator verifies external contracts, hook policy, immutable graph, pool fees/liquidity, snapshot and runtime hashes. The swarm runs the dry-run regulator, supplies plans for the next two epochs with letters, and signs only bounded Params changes. Permissionless keepers promptly preserve event/pack entropy, settle batches, perform slippage-protected pool buys and finalize weeks. Team and bounty recipients pull their own ETH. There are no owner setters, upgrades, administrative token withdrawals, room keys, Generator or BurnVault.
-
-Operational availability still matters: epoch bounties reward shifting, while batch settlement requires keepers/players to submit transactions. Future block hashes are sequencer-influenced randomness; they are not a VRF. See the review and report for this limitation and the economic targets that the unfunded simulation does not meet.
+All future launch addresses, snapshot data, chain contracts and swarm role come from the accepted launch configuration. Follow the exact verification, binding and public team-to-pool transfer steps in [launch-v31.md](docs/launch-v31.md). No test identities or guessed production addresses are supplied. Future-block randomness retains the v3 sequencer influence and timeout limitations; it is not a VRF.

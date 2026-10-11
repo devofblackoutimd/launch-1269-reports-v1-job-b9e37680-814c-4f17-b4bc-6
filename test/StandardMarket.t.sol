@@ -7,7 +7,7 @@ import {MockV4Manager} from "./mocks/MockV4Manager.sol";
 import {SwapParams} from "../src/interfaces/IV4.sol";
 
 contract TestStandardMarket is StandardMarket {
-    constructor(address m, address t, address p, address f, address n) StandardMarket(m, t, p, f, n, 0, 60) {}
+    constructor(address m, address t, address n) StandardMarket(m, t, n, 0, 60) {}
     function _validateHookAddress() internal pure override {}
 }
 
@@ -21,18 +21,10 @@ contract StandardMarketTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("standard network");
-        address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        hook = new TestStandardMarket(address(manager), address(token), address(d.params), predicted, network);
-        fees = new FeeRouter(
-            address(token),
-            address(d.params),
-            address(hook),
-            address(d.pool),
-            address(d.packs),
-            address(d.grid),
-            address(d.rewards)
-        );
-        assertEq(address(fees), predicted);
+        hook = new TestStandardMarket(address(manager), address(token), network);
+        fees = newFees(address(hook));
+        vm.prank(team);
+        hook.bindFeeRouter(address(fees));
         vm.deal(address(manager), 1000 ether);
         token.transfer(address(manager), 1000 ether);
         manager.initializeHook(hook);
@@ -42,6 +34,7 @@ contract StandardMarketTest is BaseTest {
     function testStandardBuyOnePercentEvenSplitAndNetworkQuarterPercent() public {
         (, int256 fee,) = manager.invokeBefore(hook, SwapParams(true, -int256(1 ether), 4295128740));
         assertEq(uint256(fee >> 128), 0.0125 ether);
+        if (hook.heldBase() + hook.heldSellTax() != 0) hook.flushFees();
         assertEq(fees.credit(team), 0.005 ether);
         assertEq(fees.rewardETH(), 0.005 ether);
         assertEq(hook.networkCredit(), 0.0025 ether);
@@ -57,6 +50,7 @@ contract StandardMarketTest is BaseTest {
         (, int128 fee) = manager.invokeAfter(hook, p, delta);
         assertEq(uint256(uint128(fee)), output * 100 / 10000 + output * 25 / 10000);
         assertEq(fees.heartbeatBalance(), 0);
+        if (hook.heldBase() + hook.heldSellTax() != 0) hook.flushFees();
         assertEq(fees.credit(team), output * 100 / 10000 / 2);
     }
 }

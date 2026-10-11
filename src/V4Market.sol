@@ -2,8 +2,18 @@
 pragma solidity 0.8.26;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {Params} from "./Params.sol";
-import {FeeRouter} from "./FeeRouter.sol";
+
+interface IHookParams {
+    function get(uint8 key) external view returns (uint256);
+}
+
+interface IHookRouter {
+    function token() external view returns (address);
+    function market() external view returns (address);
+    function params() external view returns (address);
+    function depositBaseFee() external payable;
+    function depositSellTax() external payable;
+}
 import {IV4PoolManager, PoolKey, SwapParams} from "./interfaces/IV4.sol";
 import "./lib/Errors.sol";
 
@@ -15,8 +25,13 @@ contract V4Market is ReentrancyGuard {
     uint160 public constant HOOK_FLAGS = 0x10cc; // afterInitialize, before/afterSwap and both swap deltas
     IV4PoolManager public immutable manager;
     address public immutable token;
-    Params public immutable params;
-    FeeRouter public immutable fees;
+    address public constant team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
+    IHookParams public params;
+    IHookRouter public fees;
+    uint256 public heldBase;
+    uint256 public heldSellTax;
+    event Bound(address indexed router, address indexed params);
+    event FeesFlushed(uint256 base, uint256 sellTax);
     address public immutable networkRecipient;
     uint24 public immutable poolFee;
     int24 public immutable tickSpacing;
@@ -54,28 +69,53 @@ contract V4Market is ReentrancyGuard {
     );
     event NetworkPaid(uint256 amount);
 
-    constructor(
-        address manager_,
-        address token_,
-        address params_,
-        address fees_,
-        address network_,
-        uint24 fee_,
-        int24 spacing_
-    ) {
+    constructor(address manager_, address token_, address network_, uint24 fee_, int24 spacing_) {
         if (
-            manager_ == address(0) || token_ == address(0) || params_ == address(0) || fees_ == address(0)
-                || network_ == address(0) || spacing_ <= 0 || spacing_ > 32767 || fee_ != 0
+            manager_ == address(0) || token_ == address(0) || network_ == address(0) || spacing_ <= 0
+                || spacing_ > 32767 || fee_ != 0
         ) revert InvalidValue();
         manager = IV4PoolManager(manager_);
         token = token_;
-        params = Params(params_);
-        fees = FeeRouter(payable(fees_));
         networkRecipient = network_;
         poolFee = fee_;
         tickSpacing = spacing_;
         poolId = keccak256(abi.encode(PoolKey(address(0), token_, fee_, spacing_, address(this))));
         _validateHookAddress();
+    }
+
+    /// @notice The team's only privileged hook action. Swaps before binding escrow all project fees.
+    function bindFeeRouter(address router) external nonReentrant {
+        if (msg.sender != team) revert Unauthorized();
+        if (address(fees) != address(0)) revert AlreadyDone();
+        if (router.code.length == 0) revert InvalidAddress();
+        IHookRouter candidate = IHookRouter(router);
+        if (candidate.token() != token || !_routerMarketValid(candidate.market())) revert InvalidValue();
+        address p = candidate.params();
+        if (p.code.length == 0) revert InvalidAddress();
+        fees = candidate;
+        params = IHookParams(p);
+        emit Bound(router, p);
+    }
+
+    /// @notice Permissionless forwarding, kept separate so a receiver cannot interrupt pool swaps.
+    function flushFees() external nonReentrant {
+        if (address(fees) == address(0)) revert NotConfigured();
+        uint256 base = heldBase;
+        uint256 excess = heldSellTax;
+        if (base + excess == 0) revert InsufficientBalance();
+        heldBase = 0;
+        heldSellTax = 0;
+        if (base != 0) fees.depositBaseFee{value: base}();
+        if (excess != 0) fees.depositSellTax{value: excess}();
+        emit FeesFlushed(base, excess);
+    }
+
+    function _routerMarketValid(address market_) internal view virtual returns (bool) {
+        return market_ == address(this);
+    }
+
+    function _coefficient(uint8 key_, uint256 default_) private view returns (uint256) {
+        return address(params) == address(0) ? default_ : params.get(key_);
     }
 
     function _validateHookAddress() internal view virtual {
@@ -208,8 +248,8 @@ contract V4Market is ReentrancyGuard {
         // Trading is possible during warmup; the deviation component starts only when TWAP is ready.
         if (block.timestamp >= initializedAt + 31 minutes) average = twap();
         if (average != 0 && price > average) dev = Math.min(1000, 10000 - Math.mulDiv(average, 10000, price));
-        uint256 target = projectBps() + params.get(Params.Key.SellHourBps) * hour / 10000
-            + params.get(Params.Key.SellDayBps) * day / 10000 + params.get(Params.Key.SellDeviationBps) * dev / 10000;
+        uint256 target = projectBps() + _coefficient(24, 500) * hour / 10000 + _coefficient(25, 400) * day / 10000
+            + _coefficient(26, 5000) * dev / 10000;
         target = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, target) * 1 ether;
         uint256 fall = feeTimestamp == 0 ? 0 : (block.timestamp - feeTimestamp) * 100 ether / 10 minutes;
         uint256 decayed = storedFeeWad > fall ? storedFeeWad - fall : projectBps() * 1 ether;
@@ -260,10 +300,11 @@ contract V4Market is ReentrancyGuard {
     }
 
     function _take(uint256 base, uint256 excess, uint256 network) private {
-        if (base != 0) manager.take(address(0), address(fees), base);
-        if (excess + network != 0) manager.take(address(0), address(this), excess + network);
+        uint256 total = base + excess + network;
+        if (total != 0) manager.take(address(0), address(this), total);
+        heldBase += base;
+        heldSellTax += excess;
         networkCredit += network;
-        if (excess != 0) fees.depositSellTax{value: excess}();
     }
 
     function buy(uint256 minOut, address recipient) external payable nonReentrant returns (uint256 received) {
@@ -294,10 +335,11 @@ contract V4Market is ReentrancyGuard {
         ) {
             revert InsufficientBalance();
         }
+        _record(false, input);
         manager.settle{value: input}();
         manager.take(token, recipient, uint256(uint128(tokenDelta)));
         networkCredit += network;
-        if (base != 0) fees.depositBaseFee{value: base}();
+        heldBase += base;
         return abi.encode(uint256(uint128(tokenDelta)));
     }
 

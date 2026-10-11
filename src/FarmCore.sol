@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -20,7 +21,7 @@ interface ITokenPacks {
     function price() external view returns (uint256);
 }
 
-contract FarmCore is ReentrancyGuard, IERC1155Receiver {
+contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
     using SafeERC20 for IERC20;
 
     struct Farm {
@@ -40,17 +41,7 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         bool activePaid;
         uint256 drops;
     }
-    FarmEngine public immutable engine;
-    FarmItems public immutable items;
-    IRewards public immutable rewards;
-    Params public immutable params;
-    address public immutable packs;
-    address public immutable starter;
-    IMarket public immutable market;
-    GridOperator public immutable grid;
-    ISeason public immutable season;
-    IERC20 public immutable token;
-    address public immutable pool;
+
     mapping(address => mapping(uint256 => bytes32)) private dropSeeds;
     mapping(address => Farm) private farms;
     address[] private players;
@@ -65,35 +56,50 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
     event Scrapped(address indexed player, uint256 indexed id, uint256 earned);
     event Active(address indexed player, uint256 indexed epoch, uint256 gross, uint256 net);
 
-    constructor(
-        address items_,
-        address rewards_,
-        address params_,
-        address packs_,
-        address starter_,
-        address market_,
-        address grid_,
-        address season_,
-        address token_,
-        address pool_,
-        address engine_
-    ) {
-        if (
-            items_ == address(0) || rewards_ == address(0) || params_ == address(0) || packs_ == address(0)
-                || starter_ == address(0) || market_ == address(0) || grid_ == address(0) || season_ == address(0)
-                || token_ == address(0) || pool_ == address(0) || engine_ == address(0)
-        ) revert InvalidAddress();
-        engine = FarmEngine(engine_);
-        items = FarmItems(items_);
-        rewards = IRewards(rewards_);
-        params = Params(params_);
-        packs = packs_;
-        starter = starter_;
-        market = IMarket(market_);
-        grid = GridOperator(grid_);
-        season = ISeason(season_);
-        token = IERC20(token_);
-        pool = pool_;
+    constructor(address registry_) GameModule(registry_) {}
+
+    function engine() public view returns (FarmEngine) {
+        return FarmEngine(registry.module(9));
+    }
+
+    function items() public view returns (FarmItems) {
+        return FarmItems(registry.module(3));
+    }
+
+    function rewards() public view returns (IRewards) {
+        return IRewards(registry.module(1));
+    }
+
+    function params() public view returns (Params) {
+        return Params(registry.params());
+    }
+
+    function packs() public view returns (address) {
+        return registry.module(4);
+    }
+
+    function starter() public view returns (address) {
+        return registry.module(5);
+    }
+
+    function market() public view returns (IMarket) {
+        return IMarket(registry.market());
+    }
+
+    function grid() public view returns (GridOperator) {
+        return GridOperator(registry.module(7));
+    }
+
+    function season() public view returns (ISeason) {
+        return ISeason(registry.module(8));
+    }
+
+    function token() public view returns (IERC20) {
+        return IERC20(registry.token());
+    }
+
+    function pool() public view returns (address) {
+        return registry.module(0);
     }
 
     function count() external view returns (uint256) {
@@ -149,7 +155,7 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
     }
 
     function register(address p) external {
-        if (msg.sender != p && msg.sender != packs && msg.sender != starter) revert Unauthorized();
+        if (msg.sender != p && msg.sender != packs() && msg.sender != starter()) revert Unauthorized();
         _register(p);
     }
 
@@ -163,9 +169,9 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
     }
 
     function _prepare(address p) private {
-        if (!rewards.ready() || !rewards.live()) revert TooEarly();
+        if (!rewards().ready() || !rewards().live()) revert TooEarly();
         _register(p);
-        _roll(p, rewards.epoch());
+        _roll(p, rewards().epoch());
     }
 
     function _roll(address p, uint256 e) private {
@@ -178,25 +184,25 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         f.routerRepairBps = 0;
         for (uint256 i; i < 24; ++i) {
             if (f.active[i] == 0) continue;
-            FarmItems.Item memory x = items.data(f.active[i]);
+            FarmItems.Item memory x = items().data(f.active[i]);
             f.clocks[i] = x.overclock;
             f.health[i] = x.durability;
         }
     }
 
     function paidPackBought(address p, uint256 n, uint256 ethValue) external nonReentrant {
-        if (msg.sender != packs) revert Unauthorized();
+        if (msg.sender != packs()) revert Unauthorized();
         _prepare(p);
         farms[p].paid += n;
         farms[p].xp += 25 * n;
-        rewards.recordSales(n);
-        season.recordSpend(p, ethValue, true);
+        rewards().recordSales(n);
+        season().recordSpend(p, ethValue, true);
     }
 
     function setReferrer(address inviter) external {
         _register(msg.sender);
         if (farms[inviter].serial == 0 || farms[inviter].serial >= farms[msg.sender].serial) revert InvalidValue();
-        rewards.setReferrer(msg.sender, inviter);
+        rewards().setReferrer(msg.sender, inviter);
     }
 
     function itemAt(address p, uint256 room, uint256 slot) external view returns (uint256) {
@@ -208,7 +214,7 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         _prepare(msg.sender);
         if (!roomUnlocked(msg.sender, room) || slot >= 6) revert InvalidValue();
         Farm storage f = farms[msg.sender];
-        FarmItems.Item memory x = items.data(id);
+        FarmItems.Item memory x = items().data(id);
         if (x.holder != msg.sender || x.equipped || f.loadout[room * 6 + slot] != 0) revert InvalidValue();
         uint256 lev = level(msg.sender);
         if ((x.rarity == 2 && lev < 3) || (x.rarity == 3 && lev < 5) || (x.rarity == 4 && lev < 10)) {
@@ -216,14 +222,14 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         }
         for (uint256 i; i < 6; ++i) {
             uint256 old = f.loadout[room * 6 + i];
-            if (old != 0 && items.data(old).kind == x.kind) revert InvalidValue();
+            if (old != 0 && items().data(old).kind == x.kind) revert InvalidValue();
         }
         if (minerIndex[msg.sender] == 0) {
             players.push(msg.sender);
             minerIndex[msg.sender] = players.length;
         }
         f.loadout[room * 6 + slot] = id;
-        items.equip(msg.sender, id);
+        items().equip(msg.sender, id);
         emit Placed(msg.sender, id, room, slot);
     }
 
@@ -234,7 +240,7 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         uint256 id = f.loadout[room * 6 + slot];
         if (id == 0) revert InvalidValue();
         delete f.loadout[room * 6 + slot];
-        items.unequip(msg.sender, id);
+        items().unequip(msg.sender, id);
         emit Unplaced(msg.sender, id, room, slot);
     }
 
@@ -264,82 +270,82 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
     }
 
     function _charge(address p, uint256 nominal, bool wallet, uint8 kind) private returns (uint256 paid) {
-        if (nominal == 0 || IERC20Metadata(address(token)).decimals() != 18) revert InvalidValue();
+        if (nominal == 0 || IERC20Metadata(address(token())).decimals() != 18) revert InvalidValue();
         if (wallet) {
             paid = nominal;
-            uint256 before_ = token.balanceOf(pool);
-            token.safeTransferFrom(p, pool, paid);
-            if (token.balanceOf(pool) - before_ != paid) revert InvalidValue();
+            uint256 before_ = token().balanceOf(pool());
+            token().safeTransferFrom(p, pool(), paid);
+            if (token().balanceOf(pool()) - before_ != paid) revert InvalidValue();
         } else {
-            paid = rewards.spend(p, nominal);
+            paid = rewards().spend(p, nominal);
         }
-        uint256 rate = market.quote(1 ether);
+        uint256 rate = market().quote(1 ether);
         if (rate == 0) revert NotConfigured();
         uint256 value = Math.mulDiv(paid, 1 ether, rate);
         farms[p].xp += value * 2500 / 1 ether;
-        season.recordSpend(p, value, kind == 0 || kind == 3 || kind == 4);
+        season().recordSpend(p, value, kind == 0 || kind == 3 || kind == 4);
         emit Spent(p, kind, paid, nominal);
     }
 
     function repair(uint256 id, bool wallet) external nonReentrant {
         _prepare(msg.sender);
-        FarmItems.Item memory x = items.data(id);
+        FarmItems.Item memory x = items().data(id);
         if (x.holder != msg.sender || x.durability == 10000) revert InvalidValue();
-        uint256 price = (10000 - x.durability) * ItemMath.baseHash(x.rarity) * params.get(Params.Key.RepairBps)
+        uint256 price = (10000 - x.durability) * ItemMath.baseHash(x.rarity) * params().get(Params.Key.RepairBps)
             * 1 ether / 10_000_000;
         _charge(msg.sender, price, wallet, 0);
-        items.maintain(id, 10000, x.overclock);
+        items().maintain(id, 10000, x.overclock);
     }
 
     function repairCable(bool wallet) external nonReentrant {
         _prepare(msg.sender);
         Farm storage f = farms[msg.sender];
-        if (f.theftUntil <= rewards.epoch()) revert InvalidValue();
-        _charge(msg.sender, params.get(Params.Key.MergePrice), wallet, 0);
+        if (f.theftUntil <= rewards().epoch()) revert InvalidValue();
+        _charge(msg.sender, params().get(Params.Key.MergePrice), wallet, 0);
         f.theftUntil = 0;
-        f.cableRepairedEpoch = uint64(rewards.epoch());
-        f.routerRepairBps = uint16((rewards.epochEnd() - block.timestamp) * 10000 / 6 hours);
+        f.cableRepairedEpoch = uint64(rewards().epoch());
+        f.routerRepairBps = uint16((rewards().epochEnd() - block.timestamp) * 10000 / 6 hours);
     }
 
     function overclock(uint256 id, bool wallet) external nonReentrant {
         _prepare(msg.sender);
-        FarmItems.Item memory x = items.data(id);
+        FarmItems.Item memory x = items().data(id);
         if (x.holder != msg.sender || x.overclock >= 5) revert InvalidValue();
-        uint256 price = params.get(Params.Key.OverclockPrice) * (uint256(x.overclock) + 1);
+        uint256 price = params().get(Params.Key.OverclockPrice) * (uint256(x.overclock) + 1);
         _charge(msg.sender, price, wallet, 1);
-        items.maintain(id, x.durability, x.overclock + 1);
+        items().maintain(id, x.durability, x.overclock + 1);
     }
 
     function expand(bool wallet) external nonReentrant {
         _prepare(msg.sender);
-        uint256 n = items.expansions(msg.sender);
-        uint256 price = params.get(Params.Key.ExpansionPrice) * (n + 1) * (n + 1);
+        uint256 n = items().expansions(msg.sender);
+        uint256 price = params().get(Params.Key.ExpansionPrice) * (n + 1) * (n + 1);
         _charge(msg.sender, price, wallet, 2);
-        items.expand(msg.sender);
+        items().expand(msg.sender);
     }
 
     function buyTokenPack(bool wallet) external nonReentrant returns (uint256 id) {
         _prepare(msg.sender);
-        uint256 price = market.quote(ITokenPacks(packs).price()) * 9000 / 10000;
+        uint256 price = market().quote(ITokenPacks(packs()).price()) * 9000 / 10000;
         _charge(msg.sender, price, wallet, 3);
         farms[msg.sender].paid++;
         farms[msg.sender].xp += 25;
-        rewards.recordSales(1);
-        id = ITokenPacks(packs).tokenPack(msg.sender);
+        rewards().recordSales(1);
+        id = ITokenPacks(packs()).tokenPack(msg.sender);
     }
 
     function lobby(uint256 amount, bool wallet) external nonReentrant {
         _prepare(msg.sender);
         uint256 paid = _charge(msg.sender, amount, wallet, 4);
-        grid.tokenLobby(msg.sender, Math.mulDiv(paid, 1 ether, market.quote(1 ether)));
+        grid().tokenLobby(msg.sender, Math.mulDiv(paid, 1 ether, market().quote(1 ether)));
     }
 
     function merge(uint256[3] calldata ids, bool wallet) external nonReentrant returns (uint256 result) {
         _prepare(msg.sender);
-        FarmItems.Item memory x = items.data(ids[0]);
+        FarmItems.Item memory x = items().data(ids[0]);
         if (x.rarity >= 3) revert InvalidValue();
         for (uint256 i; i < 3; ++i) {
-            FarmItems.Item memory y = items.data(ids[i]);
+            FarmItems.Item memory y = items().data(ids[i]);
             if (
                 y.holder != msg.sender || y.equipped || _locked(msg.sender, ids[i]) || y.kind != x.kind
                     || y.rarity != x.rarity || y.starter != x.starter
@@ -348,23 +354,23 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
                 if (ids[i] == ids[j]) revert InvalidValue();
             }
         }
-        _charge(msg.sender, params.get(Params.Key.MergePrice) * (uint256(x.rarity) + 1), wallet, 5);
+        _charge(msg.sender, params().get(Params.Key.MergePrice) * (uint256(x.rarity) + 1), wallet, 5);
         for (uint256 i; i < 3; ++i) {
-            items.destroy(ids[i]);
+            items().destroy(ids[i]);
         }
         // Starter status follows a merge; its mining discount is account-wide below.
-        result = items.mint(msg.sender, x.kind, x.rarity + 1, false);
+        result = items().mint(msg.sender, x.kind, x.rarity + 1, false);
         emit Merged(msg.sender, result);
     }
 
     function scrap(uint256 id, uint256 minimum) external nonReentrant {
         _prepare(msg.sender);
-        FarmItems.Item memory x = items.data(id);
+        FarmItems.Item memory x = items().data(id);
         if (x.holder != msg.sender || x.equipped || _locked(msg.sender, id)) revert InvalidValue();
         uint256 hash = ItemMath.baseHash(x.rarity) * (x.kind < 3 ? 10000 : 6000) / 10000 * x.durability / 10000;
         if (farms[msg.sender].paid == 0) hash /= 2;
-        items.destroy(id);
-        uint256 earned = rewards.scrap(msg.sender, hash, minimum);
+        items().destroy(id);
+        uint256 earned = rewards().scrap(msg.sender, hash, minimum);
         emit Scrapped(msg.sender, id, earned);
     }
 
@@ -377,11 +383,11 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         snap.theftUntil = f.theftUntil;
         for (uint256 i; i < 24; ++i) {
             if (snap.ids[i] == 0) continue;
-            FarmItems.Item memory x = items.data(snap.ids[i]);
+            FarmItems.Item memory x = items().data(snap.ids[i]);
             snap.clocks[i] = x.overclock;
             snap.health[i] = x.durability;
         }
-        return engine.stats(snap, room, false, rewards.epoch());
+        return engine().stats(snap, room, false, rewards().epoch());
     }
 
     function process(address p, uint256 e)
@@ -389,7 +395,7 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         nonReentrant
         returns (uint256 raw, uint256 productive, uint256 power)
     {
-        if (msg.sender != address(rewards)) revert Unauthorized();
+        if (msg.sender != address(rewards())) revert Unauthorized();
         _roll(p, e);
         Farm storage f = farms[p];
         bool occupied;
@@ -403,11 +409,11 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         FarmEngine.Snapshot memory snap =
             FarmEngine.Snapshot(f.active, f.clocks, f.health, f.activePaid, f.activeTheftUntil, f.routerRepairBps);
         uint64 theftUntil;
-        (raw, productive, power, theftUntil) = engine.process(p, e, snap);
+        (raw, productive, power, theftUntil) = engine().process(p, e, snap);
         f.theftUntil = f.cableRepairedEpoch == e && theftUntil == f.activeTheftUntil ? 0 : theftUntil;
         for (uint256 i; i < 24; ++i) {
             uint256 id = f.active[i];
-            if (id != 0 && items.data(id).holder == address(0)) _remove(f, id);
+            if (id != 0 && items().data(id).holder == address(0)) _remove(f, id);
         }
     }
 
@@ -419,13 +425,13 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
     }
 
     function activity(address p, uint256 e, uint256 gross, uint256 net) external {
-        if (msg.sender != address(rewards)) revert Unauthorized();
+        if (msg.sender != address(rewards())) revert Unauthorized();
         farms[p].xp += 100;
         emit Active(p, e, gross, net);
     }
 
     function grantDrop(address p, bytes32 seed) external {
-        if (msg.sender != address(rewards)) revert Unauthorized();
+        if (msg.sender != address(rewards())) revert Unauthorized();
         dropSeeds[p][farms[p].drops++] = seed;
     }
 
@@ -440,11 +446,11 @@ contract FarmCore is ReentrancyGuard, IERC1155Receiver {
         bytes32 seed = dropSeeds[msg.sender][f.drops];
         delete dropSeeds[msg.sender][f.drops];
         (uint8 k, uint8 r) = ItemMath.draw(seed, false, false);
-        id = items.mint(msg.sender, k, r == 0 ? 0 : 1, false);
+        id = items().mint(msg.sender, k, r == 0 ? 0 : 1, false);
     }
 
     function onERC1155Received(address, address, uint256, uint256, bytes calldata) external view returns (bytes4) {
-        if (msg.sender != address(items)) revert Unauthorized();
+        if (msg.sender != address(items())) revert Unauthorized();
         return this.onERC1155Received.selector;
     }
 

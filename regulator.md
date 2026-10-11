@@ -1,32 +1,56 @@
-# BLACKOUT v3 regulator — dry run only
+# BLACKOUT v3.1 regulator — dry run and permissionless execution
 
-`python3 tools/regulator.py state.json` prints proposals; `--example` uses a synthetic local example. It has no RPC client, key handling, signing or transaction path. `artifacts/regulator-example.json` records its example output. A human/swarm process verifies and signs permitted proposals separately.
+`python3 tools/regulator.py state.json` prints proposals and operational observations. `--example` uses synthetic local values. It has no RPC, key, signature or transaction path. Numeric authority belongs only to the configured swarm; the public bot needs none of that authority.
 
-Input fields: UTC `timestamp`, current `epoch`, unreserved `availableTokens`, measured conservative `dailyOutflowTokens`, `medianPaybackDays`, `weeklyEventLossBps`, optional `pacePolicy` (`reduce`, `hold`, or `adaptive`, default `reduce`), and dictionaries `params`/`lastChanged` keyed by EmissionBps, TariffBps, DemandTarget, PositiveWeight. Use like-for-like token units; include all outstanding committed emission, referral and season funding when estimating outflow. Use at least a trailing day and a projected next-day commitment estimate, taking the larger. Do not count reserved player credits as runway. An empty available pool with zero outflow has zero runway; a positive idle pool with no outflow has an unbounded ratio, reported as null. Neither creates initial mining funding.
+## Available funds and bounded policy
 
-| Observation | Proposed action | Limits / rationale |
+Read `RewardPool.available()`, `reserved()`, `lockedEndowment()`, `dripStart()` and `dripPeriod()`. Available excludes both reserved player obligations and locked endowment; do not count the team remainder, unactivated principal, or token mark-to-market as spendable ETH. Drip starts only on the public Endowed event, at the current Params duration 14–56 days, default 42. That schedule is then frozen; governance cannot accelerate existing vesting. Instant release is a simulation comparator only.
+
+Inputs retain v3 `timestamp`, `epoch`, `availableTokens`, `dailyOutflowTokens`, `medianPaybackDays`, `weeklyEventLossBps`, `params` and `lastChanged`. Optional `pacePolicy` is reduce/hold/adaptive. Optional v3.1 observations are `lockedEndowmentTokens`, `heartbeatBalanceETH`, `dailyKeeperCostETH`, `scheduleRunsRemaining` and `packSalePausedUntil`. All token amounts use like units. Include referrals, season funding and gross commitments in outflow. Positive idle funds with zero outflow report null runway; an empty pool reports zero.
+
+| Observation | Numeric proposal | Constraint |
 |---|---|---|
-| Available / daily outflow below 14 days | Reduce emission 10%, raise tariff 10%, reduce pace up to 10% | First protect pool liquidity; bounds still apply. |
-| Runway at least 14, median payback above 10 days | Raise emission up to 10%, reduce tariff up to 10%, reduce target pace up to 10% | More mining and less electricity; slower item supply reduces dilution. Demand feedback must be simulated before signing. |
-| Event losses above 8% of counterfactual weekly yield | Raise positive weight up to 10%; next plans Green/Cheap at severity 5000 | Leave margin below 10% loss target. |
-| Healthy state | Keep numbers; propose Calm/Green | Avoid changing numbers without an observed reason. |
-| Stale/missing TWAP or unsafe price impact | Do not execute buys/token-price operations; repair observation/keeper coverage | No owner bypass or zero-minimum buy path exists. |
+| Available / daily commitments below 14 days | Reduce emission, raise tariff, reduce pace | At most 10% per key per 24 hours, hard bounds, public letter |
+| Runway at least 14 days and realized whole-cohort payback above 10 days | Raise emission, lower tariff; reduce pace under baseline policy | Do not substitute only-repaid median or price-based projections for realized ETH |
+| Weekly causal event loss above 8% | Favor Green/Cheap and increase positive weight | Leave margin under 10%; maintain rolling event quotas |
+| Keeper deficit | Compare gas/roster/transaction volume to heartbeat revenue, propose bounded share change if needed | Params heartbeat 200–5000 bps; team 13% unchanged, incremental share comes from reward buys |
+| Unsafe/stale TWAP or high price impact | Defer that buy, maintain observations and try an adequately sized slippage-safe buy | No zero minimum or owner bypass |
 
-The `hold` policy retains the current pace when runway is healthy. The `adaptive` policy raises pace up to 10% when payback exceeds 30 days; otherwise it follows the reduction rule. All policies reduce pace on a runway emergency. The model compares all three explicitly; the funded `hold` scenario needs actual external capital and is not an automatic launch recommendation.
+`hold` retains healthy pace. `adaptive` increases pace for payback above 30 days; all policies reduce pace during a runway emergency. Emission remains 2–6% per day, default 3.5%. The 116% reservation allowance limits current gross commitments but does not establish future ETH liquidity or investment returns. Existing funded-v3 sweeps are historical, not resources available to this launch.
 
-All numeric changes clamp to both Params hard bounds and `old ± floor(old/10)`. Each key's output includes `eligibleAt=lastChanged+86400` and `ready`; a proposed value is not transaction authorization. On-chain Params independently checks caller, cooldown, bounds, nonzero change and herald letter. Default emission 3.5%/day, maximum 6%/day keeps 116% gross commitments below 7%/day; conservative instantaneous runway at the maximum is 14.37 days. Percent-of-remaining emissions mathematically decay; this ratio alone does not establish economic health.
+## Bot loop
 
-The simulation uses the same numeric policy and a fallback-shaped, planned mix: permitted negative severity 5000, positive severity 10000, minimum positive quotas and negative/cooldown caps. Real dry-run outputs are more conservative on a loss alert. The simulation's low-severity case presumes the swarm submits plans on time; absent plans revert to full-severity autonomous table behavior. The contract remains live without swarm plans, but model loss targets then need a separate stress assessment.
+1. Verify all ten module enrollments and the hook binding. Flush held hook project fees into FeeRouter. Flushing transfers existing fees and has no separate bounty.
+2. Call `advanceEpoch()` when due. It advances one actual six-hour epoch, with no accrual across inactive gaps. First startup may pay zero because the initial heartbeat is empty. The fixed advance bounty remains up to 0.001 ETH, bounded by funds.
+3. Capture native-block entropy promptly: `GridOperator.resolve(epoch)`, `PackSale.captureEntropy(receipt)`, `StarterClaim.captureEntropy(tokenId)`. Grid waits for its target; paid/starter purchases use future native block targets. Capture is independent of inventory and preserves later item claims. Replay pays nothing. An IMD six-hour policy schedule is too slow to guarantee capture inside 256 native blocks; a public execution bot must follow blocks independently.
+4. Complete `FarmRewards.processEpoch(1..8)` until `ready()`. Typical batch 4; measure, top-decile audit and credit phases each pay only for advancing their actual cursors. Do not submit empty transition calls expecting a bounty. Historical active farms may require processing even if their owner has gone offline; cost stress must count them. Reconcile actual roster and measured gas daily.
+5. Execute reward-pool buys no larger than BuyBatch (default 0.5 ETH), with a fresh 30-minute quote and minOut at least the configured slippage floor. Buy bounty cap is proportional to ETH bought, so splitting cannot increase the aggregate cap. Very small buys may be uneconomic for a bot. Execute adequate batches and flush resulting hook fees afterward.
+6. After calendar week end and settlement, `Season.prepare(week,1..64)` scores actual participants, then `finalize(week)` uses timely future entropy and earns its one nonempty-season bounty. Expired entropy must rearm. There is no bounty for expiration/rearm alone. Winners claim independently when ready.
+7. Pull accumulated ETH credit using `FeeRouter.withdraw()`. Claims and this withdrawal are never paused. Races can still make a competing transaction unprofitable; estimate gas and credit immediately before submission.
 
-The operator supplies unpredictable plan numbers before shift for only the next two epochs and publishes a letter for each. Random numbers are not district/player choices, and letters do not execute code. Prefer Calm/Green/Cheap while investigating loss, falling demand or poor oracle liquidity. The chain caps each negative to four per rolling 20 and requires four positives. Lobby effects cannot lower a district's negative weight below 0.40, have a 3-day half-life, and affect district weights rather than letting the swarm target farms.
+## Keeper compensation and cash budget
 
-## Permissionless operating loop
+Other work pays `min(unitCap × units, (measuredGas + 80000) × min(tx.gasprice,gasPriceCeiling) ×1.25, heartbeatBalance)`. Measured work excludes the payment itself;80k covers the transaction and credit overhead. Each authorized producer records work before requesting credit. The gas-price ceiling defaults 0.05 gwei; observed RPC base price for the simulation was 0.02 gwei. This is a capped reimbursement, not guaranteed profit at arbitrary gas prices. Include calldata/L1 posting, claim transaction and race costs when running a bot. Recheck live estimates before launch.
 
-1. At launch/end, call `advanceEpoch`. Gaps earn no emission. The successful caller receives a pull bounty up to the actual heartbeat balance.
-2. Resolve the shifted event after target native block N+1 and before its 256-block history expires. Resolve paid/starter packs after N+2. Robinhood native L2 blocks may pass much faster than six hours; an epoch-only cron is insufficient for entropy preservation.
-3. Complete `processEpoch` until `ready()`, normally in batches 1–4;8 is a ceiling. On audit epochs there are measurement, top-decile and credit phases. New claims then become available. Existing pull balances do not depend on this loop.
-4. Execute pool buys in transactions no larger than BuyBatch with a fresh thirty-minute quote and minimum received output. A small slippage-safe buy is valid; no shared cooldown can be griefed. Check available liquidity and gas before choosing size.
-5. After calendar week end and settlement, call `Season.prepare(week,limit)` until ready, preserve its future hash by finalizing promptly, and rearm only if expired. Winners claim separately, making inventory room as needed.
-6. Record pool available/reserved, sales pace, active farms, causal event loss, realized payback with censored fractions, both fee-path assumptions, heartbeat credit and keeper cost. Re-run the 35-day scenarios before changing the policy.
+| Work | Default maximum ETH |
+|---|---:|
+| advanceEpoch |0.001 per successful shift |
+| measure |0.000060 per actual farm cursor |
+| credit |0.000040 per actual farm cursor |
+| audit selection |0.000010 per actual selected farm |
+| buy |0.000150 per 0.5 ETH, proportionally smaller |
+| plan/paid/starter entropy |0.000010 per resolution/receipt |
+| season scoring |0.000010 per participant cursor |
+| season finalization |0.000040 per nonempty week |
 
-Only shifting has a protocol bounty; settlement/entropy/buyback/week work needs a funded keeper operation or participating users. Heartbeat cannot be withdrawn administratively. Independent operators should monitor one another because delayed settlement pauses new gameplay and a depleted heartbeat can make the next shift's bounty zero. No transaction in this assignment performed any of these live operations.
+No bounty can overdraw the heartbeat; there is no unpaid debt. If the balance is exhausted, work still completes with a partial or zero credit and cannot claim the difference later. Track **due**, **paid**, earliest shortfall and per-prefix headroom, not just ending balance. The baseline 1 ETH balance cap routes overflow to reward buys. Increasing that cap cannot cure an operating cash-flow deficit.
+
+The report compares the 2% share with the smallest tested covering share/cap combination, 31% / 4.5 ETH, and quantifies the effect on rewards. This is not a global minimum. The research candidate uses 20% endowment and a 42-day drip; its unattended weak event-loss case exceeds 10%, so no all-target launch pass is claimed. A larger initial share can be selected in the three-argument Params constructor, within 200–5000 bps and 1–10 ETH. Existing deployments must use the ordinary 10%-per-day path. Team routing remains 13%; pack/lobby/sell-surcharge rewards receive `87% - heartbeat share`, plus any cap overflow. Project base fees remain 50/50 team/rewards and do not fund heartbeat.
+
+## IMD schedules and pause responsibility
+
+Heartbeat ETH pays on-chain bounties only. Current IMD schedule API top-ups cost 0.5 IMD/run, supplied by the payer on Ethereum. A35-day policy schedule with four runs/day needs 70 IMD, modeled at 0.24157 ETH plus external payment/acquisition costs. No contract path withdraws heartbeat ETH or purchases those runs. The team or another volunteer must acquire IMD and pay `schedule.topup`, publish receipts and keep at least one week of runs ahead. Budget reports show the run cost separately and subtract it from team proceeds when the team pays. Extra/minutely swarm jobs multiply this expense and are not free.
+
+Only the swarm can pause new paid PackSale purchases for 1second to 72 hours. Expiry auto-unpauses. The next pause must wait an additional 72 hours after the original expiry, even after an early manual unpause. Entropy capture, existing receipts, free rewards, all keeper calls, claims and withdrawals remain live throughout. Pausing creates no upgrade or asset recovery power.
+
+The modeled policy case assumes timely swarm plans at minimum negative severity 5000. If the swarm is absent, automatic v3 fallback and full negative severity apply; keepers preserve execution, not the policy-case loss/payback outcome. Monitor separate unattended sensitivities. Future-block hashes remain sequencer-influenced randomness, not verifiable randomness. No autonomous contract can guarantee submissions when no public operator finds the bounded bounty profitable.

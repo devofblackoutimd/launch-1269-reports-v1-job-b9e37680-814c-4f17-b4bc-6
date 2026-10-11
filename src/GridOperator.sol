@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Params} from "./Params.sol";
 import {FeeRouter} from "./FeeRouter.sol";
@@ -7,7 +8,7 @@ import {ChainClock} from "./lib/ChainClock.sol";
 import {IRewards, ICore, ISeason} from "./interfaces/IGame.sol";
 import "./lib/Errors.sol";
 
-contract GridOperator is ReentrancyGuard {
+contract GridOperator is GameModule, ReentrancyGuard {
     enum Kind {
         Calm,
         Outage,
@@ -42,12 +43,7 @@ contract GridOperator is ReentrancyGuard {
         uint256 amount;
         uint64 at;
     }
-    address public immutable swarmWallet;
-    Params public immutable params;
-    FeeRouter public immutable fees;
-    IRewards public immutable rewards;
-    ICore public immutable core;
-    ISeason public immutable season;
+
     mapping(uint256 => Plan) private plans;
     mapping(uint256 => EventData) private events;
     mapping(uint256 => Lobby) public lobbies;
@@ -56,17 +52,30 @@ contract GridOperator is ReentrancyGuard {
     event Herald(uint256 indexed epoch, Kind kind, uint256 district, uint256 severity, bytes32 seed, string letter);
     event Lobbied(address indexed player, uint256 indexed district, uint256 ethValue);
 
-    constructor(address swarm_, address params_, address fees_, address rewards_, address core_, address season_) {
-        if (
-            swarm_ == address(0) || params_ == address(0) || fees_ == address(0) || rewards_ == address(0)
-                || core_ == address(0) || season_ == address(0)
-        ) revert InvalidAddress();
-        swarmWallet = swarm_;
-        params = Params(params_);
-        fees = FeeRouter(payable(fees_));
-        rewards = IRewards(rewards_);
-        core = ICore(core_);
-        season = ISeason(season_);
+    constructor(address registry_) GameModule(registry_) {}
+
+    function swarmWallet() public view returns (address) {
+        return Params(registry.params()).swarmWallet();
+    }
+
+    function params() public view returns (Params) {
+        return Params(registry.params());
+    }
+
+    function fees() public view returns (FeeRouter) {
+        return FeeRouter(payable(registry.module(6)));
+    }
+
+    function rewards() public view returns (IRewards) {
+        return IRewards(registry.module(1));
+    }
+
+    function core() public view returns (ICore) {
+        return ICore(registry.module(2));
+    }
+
+    function season() public view returns (ISeason) {
+        return ISeason(registry.module(8));
     }
 
     function district(address p) public pure returns (uint256) {
@@ -74,8 +83,8 @@ contract GridOperator is ReentrancyGuard {
     }
 
     function submitPlan(uint256 e, Kind kind, uint16 severity, bytes32 number, string calldata letter) external {
-        if (msg.sender != swarmWallet) revert Unauthorized();
-        uint256 current = rewards.epoch();
+        if (msg.sender != swarmWallet()) revert Unauthorized();
+        uint256 current = rewards().epoch();
         if (
             e <= current || e > current + 2 || severity < 5000 || severity > 10000 || bytes(letter).length == 0
                 || bytes(letter).length > 1024
@@ -97,21 +106,23 @@ contract GridOperator is ReentrancyGuard {
 
     function lobbyWeight(uint256 d) public view returns (uint256) {
         uint256 a = lobbyAmount(d);
-        uint256 reduction = a * params.get(Params.Key.LobbyKBps) / (1 ether + a);
+        uint256 reduction = a * params().get(Params.Key.LobbyKBps) / (1 ether + a);
         uint256 w = 10000 - reduction;
-        uint256 floor = params.get(Params.Key.LobbyMinWeight);
+        uint256 floor = params().get(Params.Key.LobbyMinWeight);
         return w < floor ? floor : w;
     }
 
     function lobbyETH() external payable nonReentrant {
-        if (msg.value == 0 || !core.hasFarm(msg.sender) || !rewards.live() || !rewards.ready()) revert InvalidValue();
+        if (msg.value == 0 || !core().hasFarm(msg.sender) || !rewards().live() || !rewards().ready()) {
+            revert InvalidValue();
+        }
         _lobby(msg.sender, msg.value);
-        season.recordSpend(msg.sender, msg.value, true);
-        fees.depositLobby{value: msg.value}();
+        season().recordSpend(msg.sender, msg.value, true);
+        fees().depositLobby{value: msg.value}();
     }
 
     function tokenLobby(address p, uint256 value) external {
-        if (msg.sender != address(core) || value == 0) revert Unauthorized();
+        if (msg.sender != address(core()) || value == 0) revert Unauthorized();
         _lobby(p, value);
     }
 
@@ -122,7 +133,7 @@ contract GridOperator is ReentrancyGuard {
     }
 
     function shift(uint256 e) external {
-        if (msg.sender != address(rewards)) revert Unauthorized();
+        if (msg.sender != address(rewards())) revert Unauthorized();
         EventData storage x = events[e];
         if (x.target != 0) revert AlreadyDone();
         x.target = uint64(ChainClock.number() + 1);
@@ -137,7 +148,17 @@ contract GridOperator is ReentrancyGuard {
         return Kind(table[(e - 1) % 20]);
     }
 
-    function resolve(uint256 e) public {
+    function resolve(uint256 e) public nonReentrant {
+        _resolve(e, msg.sender);
+    }
+
+    function resolveFor(uint256 e, address keeper) external nonReentrant {
+        if (msg.sender != address(rewards())) revert Unauthorized();
+        _resolve(e, keeper);
+    }
+
+    function _resolve(uint256 e, address keeper) private {
+        uint256 startGas = gasleft();
         EventData storage x = events[e];
         if (x.resolved) return;
         if (x.target == 0 || ChainClock.number() <= x.target) revert TooEarly();
@@ -161,7 +182,7 @@ contract GridOperator is ReentrancyGuard {
             k = uint256(x.seed) % 2 == 0 ? Kind.Green : Kind.Cheap;
         }
         if (k >= Kind.Outage && k <= Kind.Audit && repeated >= 4) k = Kind.Calm;
-        if (!p.submitted && h != bytes32(0) && uint256(x.seed) % 10000 < params.get(Params.Key.PositiveWeight)) {
+        if (!p.submitted && h != bytes32(0) && uint256(x.seed) % 10000 < params().get(Params.Key.PositiveWeight)) {
             k = uint256(x.seed) >> 16 & 1 == 0 ? Kind.Green : Kind.Cheap;
         }
         uint256[8] memory weights;
@@ -190,6 +211,7 @@ contract GridOperator is ReentrancyGuard {
         emit Herald(
             e, k, x.district, x.severity, x.seed, p.submitted ? p.letter : "Autonomous fallback: the grid continues."
         );
+        fees().payWork(keeper, Params.Key.EntropyBounty, 1, startGas - gasleft());
     }
 
     function eventAt(uint256 e)

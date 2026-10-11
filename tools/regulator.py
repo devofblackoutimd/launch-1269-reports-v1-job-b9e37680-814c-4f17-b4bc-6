@@ -36,7 +36,23 @@ def propose(state):
     kinds=['Green','Cheap'] if loss>800 or runway<14 else ['Calm','Green']
     return dict(dryRun=True,runwayDays=None if math.isinf(runway) else runway,proposals=output,
                 nextTwoEpochs=[dict(epoch=state['epoch']+i+1,kind=k,severity=5000 if loss>800 else 10000,randomNumber='operator must supply before shift',letter=' '.join(reason) or 'Maintain bounded conditions.') for i,k in enumerate(kinds)],
-                operatorActions=['Resolve each shifted epoch before its future block hash expires.','Process every closed epoch in batches; then permit the next shift.','Inspect TWAP, reward-pool commitments and simulated payback before signing any proposal.'])
+                operatorActions=['Flush held hook fees after the one-time bind.', 'Capture each shifted epoch, paid receipt and starter entropy before native block history expires.', 'Process every closed epoch in bounded batches, including audit; then permit the next shift.', 'Use gas reimbursement caps and heartbeat balance when quoting useful keeper work.', 'Prepare and finalize each nonempty season once; winners claim separately.', 'Pay IMD schedule top-ups from an external wallet; heartbeat ETH has no administrative exit.', 'Inspect TWAP, available pool excluding locked endowment, realized ETH payback and weekly loss before signing.'],
+                operations=operations(state))
+
+def operations(state):
+    """Informational cash budget. Off-chain IMD costs are never counted as withdrawable heartbeat ETH."""
+    locked=state.get('lockedEndowmentTokens',0)
+    balance=state.get('heartbeatBalanceETH',0)
+    due=state.get('dailyKeeperCostETH',0)
+    runs=state.get('scheduleRunsRemaining',0)
+    if min(locked,balance,due,runs)<0:raise ValueError('operational balances must be nonnegative')
+    return dict(lockedEndowmentTokens=locked,availableExcludesLocked=True,
+                keeperRunwayDays=balance/due if due else None,
+                externalScheduleDays=runs/4,
+                scheduleTopupNeeded=runs<28,
+                canFundScheduleFromHeartbeat=False,
+                salePausedUntil=state.get('packSalePausedUntil',0),
+                keepersAndClaimsAlwaysEnabled=True)
 
 def example():
     return dict(timestamp=172800,epoch=12,availableTokens=1_000_000,dailyOutflowTokens=80000,medianPaybackDays=15,weeklyEventLossBps=900,

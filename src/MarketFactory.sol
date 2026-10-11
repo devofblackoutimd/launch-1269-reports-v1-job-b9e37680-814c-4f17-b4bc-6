@@ -8,8 +8,6 @@ contract MarketFactory {
     struct Config {
         address manager;
         address token;
-        address params;
-        address fees;
         address networkRecipient;
         int24 tickSpacing;
     }
@@ -19,7 +17,7 @@ contract MarketFactory {
         return keccak256(
             abi.encodePacked(
                 type(V4Market).creationCode,
-                abi.encode(c.manager, c.token, c.params, c.fees, c.networkRecipient, uint24(0), c.tickSpacing)
+                abi.encode(c.manager, c.token, c.networkRecipient, uint24(0), c.tickSpacing)
             )
         );
     }
@@ -54,7 +52,7 @@ contract MarketFactory {
         address target = predict(c, salt);
         if (uint160(target) & 0x3fff != 0x10cc) revert InvalidAddress();
         if (target.code.length != 0) return V4Market(payable(target));
-        market = new V4Market{salt: salt}(c.manager, c.token, c.params, c.fees, c.networkRecipient, 0, c.tickSpacing);
+        market = new V4Market{salt: salt}(c.manager, c.token, c.networkRecipient, 0, c.tickSpacing);
         emit MarketDeployed(address(market), salt);
     }
 }

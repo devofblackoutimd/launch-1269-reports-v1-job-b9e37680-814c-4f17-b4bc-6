@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GameModule} from "./lib/GameModule.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Params} from "./Params.sol";
@@ -10,7 +11,7 @@ import {ICore, ISeason} from "./interfaces/IGame.sol";
 import "./lib/Errors.sol";
 
 /// @notice Epoch transitions do O(1) work. Anyone settles a closed roster in batches of at most eight.
-contract FarmRewards is ReentrancyGuard {
+contract FarmRewards is GameModule, ReentrancyGuard {
     uint256 public constant EPOCH = 6 hours;
 
     struct Epoch {
@@ -53,13 +54,7 @@ contract FarmRewards is ReentrancyGuard {
         bool referralClosed;
         Vintage[32] vintages;
     }
-    Params public immutable params;
-    RewardPool public immutable pool;
-    ICore public immutable core;
-    GridOperator public immutable grid;
-    FeeRouter public immutable fees;
-    ISeason public immutable season;
-    uint256 public immutable launchTime;
+
     uint256 public epoch;
     uint256 public settledEpoch;
     uint256 public queuedTax;
@@ -79,29 +74,37 @@ contract FarmRewards is ReentrancyGuard {
     event Spent(address indexed player, uint256 consumed);
     event ReferrerSet(address indexed player, address indexed referrer);
 
-    constructor(
-        address params_,
-        address pool_,
-        address core_,
-        address grid_,
-        address fees_,
-        address season_,
-        uint256 launch_
-    ) {
-        if (
-            params_ == address(0) || pool_ == address(0) || core_ == address(0) || grid_ == address(0)
-                || fees_ == address(0) || season_ == address(0) || launch_ == 0
-        ) revert InvalidValue();
-        params = Params(params_);
-        pool = RewardPool(pool_);
-        core = ICore(core_);
-        grid = GridOperator(grid_);
-        fees = FeeRouter(payable(fees_));
-        season = ISeason(season_);
-        launchTime = launch_;
+    constructor(address registry_) GameModule(registry_) {}
+
+    function params() public view returns (Params) {
+        return Params(registry.params());
+    }
+
+    function pool() public view returns (RewardPool) {
+        return RewardPool(registry.module(0));
+    }
+
+    function core() public view returns (ICore) {
+        return ICore(registry.module(2));
+    }
+
+    function grid() public view returns (GridOperator) {
+        return GridOperator(registry.module(7));
+    }
+
+    function fees() public view returns (FeeRouter) {
+        return FeeRouter(payable(registry.module(6)));
+    }
+
+    function season() public view returns (ISeason) {
+        return ISeason(registry.module(8));
+    }
+
+    function launchTime() public view returns (uint256) {
+        return registry.launchTime();
     }
     modifier onlyCore() {
-        if (msg.sender != address(core)) revert Unauthorized();
+        if (msg.sender != address(core())) revert Unauthorized();
         _;
     }
 
@@ -122,34 +125,34 @@ contract FarmRewards is ReentrancyGuard {
     }
 
     function advanceEpoch() external nonReentrant {
-        if (block.timestamp < launchTime || !ready() || (epoch != 0 && block.timestamp < epochs[epoch].end)) {
+        if (block.timestamp < launchTime() || !ready() || (epoch != 0 && block.timestamp < epochs[epoch].end)) {
             revert TooEarly();
         }
         if (epoch != 0) {
-            grid.resolve(epoch);
+            grid().resolveFor(epoch, msg.sender);
             Epoch storage old = epochs[epoch];
-            old.roster = uint64(core.count());
+            old.roster = uint64(core().count());
             old.phase = 1;
-            old.mining = pool.available() * old.emission / 40000;
+            old.mining = pool().available() * old.emission / 40000;
             old.budget = old.mining * 116 / 100;
             old.redis = currentRedis;
-            pool.reserve(old.budget);
+            pool().reserve(old.budget);
             emit EpochClosed(epoch, old.budget, old.roster);
         }
         epoch++;
         Epoch storage e = epochs[epoch];
         e.start = uint64(block.timestamp);
         e.end = uint64(block.timestamp + EPOCH);
-        e.target = params.get(Params.Key.DemandTarget) * 6;
-        e.tariff = params.get(Params.Key.TariffBps);
-        e.emission = params.get(Params.Key.EmissionBps);
+        e.target = params().get(Params.Key.DemandTarget) * 6;
+        e.tariff = params().get(Params.Key.TariffBps);
+        e.emission = params().get(Params.Key.EmissionBps);
         for (uint256 k = uint256(Params.Key.FullSetBps); k <= uint256(Params.Key.SetCapBps); ++k) {
-            epochParam[epoch][k] = params.get(Params.Key(k));
+            epochParam[epoch][k] = params().get(Params.Key(k));
         }
         currentRedis = queuedTax;
         queuedTax = 0;
-        grid.shift(epoch);
-        fees.payBounty(msg.sender);
+        grid().shift(epoch);
+        fees().payBounty(msg.sender);
         emit EpochStarted(epoch, e.start, e.end, msg.sender);
     }
 
@@ -159,8 +162,8 @@ contract FarmRewards is ReentrancyGuard {
     }
 
     function _greater(uint256 e, uint256 a, uint256 b) private view returns (bool) {
-        uint256 x = shares[e][core.playerAt(a)].raw;
-        uint256 y = shares[e][core.playerAt(b)].raw;
+        uint256 x = shares[e][core().playerAt(a)].raw;
+        uint256 y = shares[e][core().playerAt(b)].raw;
         return x > y || (x == y && a < b);
     }
 
@@ -193,19 +196,24 @@ contract FarmRewards is ReentrancyGuard {
 
     /// @dev Three phases: measure, select top decile (audit only), credit. No caller supplies allocation data.
     function processEpoch(uint256 limit) external nonReentrant {
+        uint256 startGas = gasleft();
         if (limit == 0 || limit > 8 || epoch < 2 || ready()) revert InvalidValue();
         uint256 id = epoch - 1;
         Epoch storage e = epochs[id];
-        (GridOperator.Kind kind, uint16 severity,, bytes32 seed,) = grid.eventAt(id);
+        (GridOperator.Kind kind, uint16 severity,, bytes32 seed,) = grid().eventAt(id);
+        uint256 work;
+        Params.Key bountyKind =
+            e.phase == 1 ? Params.Key.MeasureBounty : e.phase == 2 ? Params.Key.AuditBounty : Params.Key.CreditBounty;
         if (e.phase == 1) {
             for (uint256 n; n < limit && e.cursor < e.roster; ++n) {
-                address p = core.playerAt(e.cursor);
-                (uint256 raw, uint256 productive, uint256 power) = core.process(p, id);
+                address p = core().playerAt(e.cursor);
+                (uint256 raw, uint256 productive, uint256 power) = core().process(p, id);
                 shares[id][p] = Share(raw, productive, power, false);
                 e.raw += raw;
                 if (raw != 0) e.lastActive = e.cursor;
                 if (raw != 0 && kind == GridOperator.Kind.Audit) _push(id, e.cursor);
                 e.cursor++;
+                work++;
             }
             if (e.cursor == e.roster) {
                 e.cursor = 0;
@@ -214,8 +222,9 @@ contract FarmRewards is ReentrancyGuard {
             }
         } else if (e.phase == 2) {
             for (uint256 n; n < limit && e.cursor < e.audited; ++n) {
-                shares[id][core.playerAt(_pop(id))].audit = true;
+                shares[id][core().playerAt(_pop(id))].audit = true;
                 e.cursor++;
+                work++;
             }
             if (e.cursor == e.audited) {
                 e.cursor = 0;
@@ -223,7 +232,8 @@ contract FarmRewards is ReentrancyGuard {
             }
         } else {
             for (uint256 n; n < limit && e.cursor < e.roster; ++n) {
-                address p = core.playerAt(e.cursor++);
+                address p = core().playerAt(e.cursor++);
+                work++;
                 Share storage s = shares[id][p];
                 if (s.raw == 0) continue;
                 uint256 gross = Math.mulDiv(e.mining, s.productive, e.raw);
@@ -243,16 +253,16 @@ contract FarmRewards is ReentrancyGuard {
                 }
                 _credit(p, net + redis, id, e.end);
                 e.spent += net + redis + referral;
-                core.activity(p, id, gross, net);
+                core().activity(p, id, gross, net);
                 if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(seed, p, "supply"))) % 10000 < 500) {
-                    core.grantDrop(p, keccak256(abi.encode(seed, p, "item")));
+                    core().grantDrop(p, keccak256(abi.encode(seed, p, "item")));
                 }
-                season.recordActivity(p, (e.start - launchTime) / 7 days, gross);
+                season().recordActivity(p, (e.start - launchTime()) / 7 days, gross);
             }
             if (e.cursor == e.roster) {
                 uint256 prize = e.raw == 0 ? 0 : e.mining / 100;
                 e.spent += prize;
-                if (prize != 0) season.addPrize((e.start - launchTime) / 7 days, prize);
+                if (prize != 0) season().addPrize((e.start - launchTime()) / 7 days, prize);
                 uint256 recycle = e.budget + e.redis - e.spent;
                 if (e.raw == 0) {
                     queuedTax += e.redis;
@@ -260,16 +270,17 @@ contract FarmRewards is ReentrancyGuard {
                 }
                 uint256 freshUnused = e.budget > e.spent ? e.budget - e.spent : 0;
                 uint256 allowance = e.raw == 0 ? 0 : Math.min(e.mining / 6, freshUnused);
-                if (scrapAllowance != 0) pool.recycle(scrapAllowance);
+                if (scrapAllowance != 0) pool().recycle(scrapAllowance);
                 scrapAllowance = allowance;
                 recycle -= allowance;
-                if (recycle != 0) pool.recycle(recycle);
+                if (recycle != 0) pool().recycle(recycle);
                 lastYieldPerHash = e.raw == 0 ? 0 : Math.mulDiv(e.mining, 1 ether, e.raw);
                 e.phase = 4;
                 settledEpoch = id;
                 emit EpochSettled(id, e.mining, recycle);
             }
         }
+        if (work != 0) fees().payWork(msg.sender, bountyKind, work, startGas - gasleft());
     }
 
     function pending(address p) external view returns (uint256) {
@@ -283,7 +294,7 @@ contract FarmRewards is ReentrancyGuard {
     function setReferrer(address p, address ref) external onlyCore {
         Account storage a = accounts[p];
         if (a.referrer != address(0) || a.referralClosed) revert AlreadyDone();
-        if (p == ref || !core.hasFarm(ref)) revert InvalidValue();
+        if (p == ref || !core().hasFarm(ref)) revert InvalidValue();
         a.referrer = ref;
         emit ReferrerSet(p, ref);
     }
@@ -332,14 +343,14 @@ contract FarmRewards is ReentrancyGuard {
         uint256 tax = _consume(msg.sender, amount, true);
         queuedTax += tax;
         net = amount - tax;
-        pool.pay(msg.sender, net);
+        pool().pay(msg.sender, net);
         emit Claimed(msg.sender, amount, tax);
     }
 
     function spend(address p, uint256 nominal) external onlyCore nonReentrant returns (uint256 consumed) {
         consumed = Math.mulDiv(nominal, 10000, 10500, Math.Rounding.Ceil);
         _consume(p, consumed, false);
-        pool.recycle(consumed);
+        pool().recycle(consumed);
         emit Spent(p, consumed);
     }
 
@@ -352,16 +363,16 @@ contract FarmRewards is ReentrancyGuard {
     }
 
     function seasonReady(uint256 week) external view returns (bool) {
-        return ready() && epoch != 0 && epochs[epoch].start >= launchTime + (week + 1) * 7 days;
+        return ready() && epoch != 0 && epochs[epoch].start >= launchTime() + (week + 1) * 7 days;
     }
 
     function releasePrize(uint256 amount) external nonReentrant {
-        if (msg.sender != address(season)) revert Unauthorized();
-        pool.recycle(amount);
+        if (msg.sender != address(season())) revert Unauthorized();
+        pool().recycle(amount);
     }
 
     function award(address p, uint256 amount) external nonReentrant {
-        if (msg.sender != address(season)) revert Unauthorized();
+        if (msg.sender != address(season())) revert Unauthorized();
         _credit(p, amount, epoch, block.timestamp);
     }
 }

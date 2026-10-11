@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {GameModule} from "./lib/GameModule.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Params} from "./Params.sol";
 import {IMarket} from "./interfaces/Interfaces.sol";
 import "./lib/Errors.sol";
 
-contract FeeRouter is ReentrancyGuard {
+contract FeeRouter is GameModule, ReentrancyGuard {
     address public constant team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
-    uint256 public constant HEARTBEAT_CAP = 1 ether;
-    IERC20 public immutable token;
-    Params public immutable params;
-    IMarket public immutable market;
-    address public immutable rewardPool;
-    address public immutable packSale;
-    address public immutable grid;
-    address public immutable rewards;
+
+    function HEARTBEAT_CAP() public view returns (uint256) {
+        return params().get(Params.Key.HeartbeatCap);
+    }
+
     uint256 public rewardETH;
     uint256 public heartbeatBalance;
     uint256 public lastBuy;
@@ -24,27 +22,44 @@ contract FeeRouter is ReentrancyGuard {
     event Bought(uint256 ethAmount, uint256 tokenAmount);
     event Withdrawn(address indexed recipient, uint256 amount);
     event Bounty(address indexed caller, uint256 amount);
+    event WorkBounty(address indexed caller, Params.Key indexed kind, uint256 units, uint256 amount);
 
-    constructor(
-        address token_,
-        address params_,
-        address market_,
-        address pool_,
-        address packs_,
-        address grid_,
-        address rewards_
-    ) {
-        if (
-            token_ == address(0) || params_ == address(0) || market_ == address(0) || pool_ == address(0)
-                || packs_ == address(0) || grid_ == address(0) || rewards_ == address(0)
-        ) revert InvalidAddress();
-        token = IERC20(token_);
-        params = Params(params_);
-        market = IMarket(market_);
-        rewardPool = pool_;
-        packSale = packs_;
-        grid = grid_;
-        rewards = rewards_;
+    constructor(address registry_) GameModule(registry_) {}
+
+    function token() public view returns (IERC20) {
+        return IERC20(registry.token());
+    }
+
+    function params() public view returns (Params) {
+        return Params(registry.params());
+    }
+
+    function market() public view returns (IMarket) {
+        return IMarket(registry.market());
+    }
+
+    function rewardPool() public view returns (address) {
+        return registry.module(0);
+    }
+
+    function packSale() public view returns (address) {
+        return registry.module(4);
+    }
+
+    function grid() public view returns (address) {
+        return registry.module(7);
+    }
+
+    function rewards() public view returns (address) {
+        return registry.module(1);
+    }
+
+    function season() public view returns (address) {
+        return registry.module(8);
+    }
+
+    function starter() public view returns (address) {
+        return registry.module(5);
     }
 
     receive() external payable {
@@ -64,25 +79,26 @@ contract FeeRouter is ReentrancyGuard {
     }
 
     function depositPack() external payable {
-        if (msg.sender != packSale) revert Unauthorized();
+        if (msg.sender != packSale()) revert Unauthorized();
         _route(1);
     }
 
     function depositLobby() external payable {
-        if (msg.sender != grid) revert Unauthorized();
+        if (msg.sender != grid()) revert Unauthorized();
         _route(2);
     }
 
     function depositSellTax() external payable {
-        if (msg.sender != address(market)) revert Unauthorized();
+        if (msg.sender != address(market())) revert Unauthorized();
         _route(3);
     }
 
     function _route(uint8 stream) private {
         if (msg.value == 0) revert InvalidValue();
         uint256 t = msg.value * 1300 / 10000;
-        uint256 h = msg.value * 200 / 10000;
-        uint256 room = HEARTBEAT_CAP - heartbeatBalance;
+        uint256 h = msg.value * params().get(Params.Key.HeartbeatBps) / 10000;
+        uint256 cap = HEARTBEAT_CAP();
+        uint256 room = cap > heartbeatBalance ? cap - heartbeatBalance : 0;
         if (h > room) h = room;
         credit[team] += t;
         heartbeatBalance += h;
@@ -91,12 +107,40 @@ contract FeeRouter is ReentrancyGuard {
     }
 
     function payBounty(address caller) external {
-        if (msg.sender != rewards) revert Unauthorized();
-        uint256 b = params.get(Params.Key.Bounty);
-        if (b > heartbeatBalance) b = heartbeatBalance;
-        heartbeatBalance -= b;
-        credit[caller] += b;
+        if (msg.sender != rewards()) revert Unauthorized();
+        uint256 b = _creditBounty(caller, params().get(Params.Key.Bounty));
         emit Bounty(caller, b);
+    }
+
+    /// @dev Only immutable work producers can request credits, after advancing their monotonic cursors.
+    function payWork(address caller, Params.Key kind, uint256 units, uint256 gasUsed) external {
+        bool allowed = msg.sender == rewards()
+            && (kind == Params.Key.MeasureBounty || kind == Params.Key.CreditBounty || kind == Params.Key.AuditBounty);
+        allowed = allowed || (msg.sender == grid() || msg.sender == packSale() || msg.sender == starter())
+            && kind == Params.Key.EntropyBounty;
+        allowed = allowed || msg.sender == season()
+            && (kind == Params.Key.SeasonScoreBounty || kind == Params.Key.SeasonBounty);
+        if (!allowed) revert Unauthorized();
+        if (units == 0 || units > 64) revert InvalidValue();
+        uint256 amount = _creditBounty(caller, _workAmount(params().get(kind) * units, gasUsed));
+        emit WorkBounty(caller, kind, units, amount);
+    }
+
+    /// @dev Reimburse measured work plus transaction/payment overhead, with a 25% bot margin.
+    /// Caps prevent high gas-price bidding or calldata padding from drawing an unbounded amount.
+    function _workAmount(uint256 cap, uint256 gasUsed) private view returns (uint256) {
+        uint256 price = tx.gasprice;
+        uint256 ceiling = params().get(Params.Key.KeeperGasPrice);
+        if (price > ceiling) price = ceiling;
+        uint256 wanted = (gasUsed + 80_000) * price * 125 / 100;
+        return wanted > cap ? cap : wanted;
+    }
+
+    function _creditBounty(address caller, uint256 requested) private returns (uint256 amount) {
+        if (caller == address(0)) revert InvalidAddress();
+        amount = requested > heartbeatBalance ? heartbeatBalance : requested;
+        heartbeatBalance -= amount;
+        credit[caller] += amount;
     }
 
     function withdraw() external nonReentrant {
@@ -109,19 +153,24 @@ contract FeeRouter is ReentrancyGuard {
     }
 
     function executeBuys(uint256 ethAmount, uint256 minOut) external nonReentrant returns (uint256 received) {
-        if (ethAmount == 0 || ethAmount > params.get(Params.Key.BuyBatch) || ethAmount > rewardETH) {
+        uint256 startGas = gasleft();
+        if (ethAmount == 0 || ethAmount > params().get(Params.Key.BuyBatch) || ethAmount > rewardETH) {
             revert InvalidValue();
         }
-        uint256 q = market.quote(ethAmount);
-        if (q == 0 || minOut == 0 || minOut < q * (10000 - params.get(Params.Key.SlippageBps)) / 10000) {
+        uint256 q = market().quote(ethAmount);
+        if (q == 0 || minOut == 0 || minOut < q * (10000 - params().get(Params.Key.SlippageBps)) / 10000) {
             revert InvalidValue();
         }
         rewardETH -= ethAmount;
         lastBuy = block.timestamp;
-        uint256 before_ = token.balanceOf(rewardPool);
-        market.buy{value: ethAmount}(minOut, rewardPool);
-        received = token.balanceOf(rewardPool) - before_;
+        uint256 before_ = token().balanceOf(rewardPool());
+        market().buy{value: ethAmount}(minOut, rewardPool());
+        received = token().balanceOf(rewardPool()) - before_;
         if (received < minOut) revert InsufficientBalance();
+        // The aggregate cap is proportional to ETH bought, even when a caller splits a buy.
+        uint256 bounty = params().get(Params.Key.BuyBounty) * ethAmount / params().get(Params.Key.BuyBatch);
+        uint256 paid = _creditBounty(msg.sender, _workAmount(bounty, startGas - gasleft()));
+        emit WorkBounty(msg.sender, Params.Key.BuyBounty, ethAmount, paid);
         emit Bought(ethAmount, received);
     }
 }

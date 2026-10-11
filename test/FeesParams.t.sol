@@ -37,6 +37,23 @@ contract FeesParamsTest is BaseTest {
         d.fees.withdraw();
     }
 
+    function testLoweringHeartbeatCapCannotUnderflowOrBlockRouting() public {
+        vm.warp(launch + 1 days);
+        vm.prank(swarm);
+        d.params.set(Params.Key.HeartbeatCap, 1.1 ether, "Accumulate runway");
+        vm.prank(address(d.packs));
+        d.fees.depositPack{value: 100 ether}();
+        assertEq(d.fees.heartbeatBalance(), 1.1 ether);
+        vm.warp(launch + 2 days);
+        vm.prank(swarm);
+        d.params.set(Params.Key.HeartbeatCap, 1 ether, "Lower future accumulation cap");
+        uint256 oldRewards = d.fees.rewardETH();
+        vm.prank(address(d.packs));
+        d.fees.depositPack{value: 1 ether}();
+        assertEq(d.fees.heartbeatBalance(), 1.1 ether);
+        assertEq(d.fees.rewardETH() - oldRewards, 0.87 ether);
+    }
+
     function testFuzzSplitsConserveEveryWei(uint96 amount) public {
         uint256 v = bound(amount, 1, 100 ether);
         vm.prank(address(d.packs));
@@ -90,7 +107,7 @@ contract FeesParamsTest is BaseTest {
     }
 
     function testAllDefaultParamsWithinHardBounds() public view {
-        for (uint256 i; i < 32; ++i) {
+        for (uint256 i; i < 43; ++i) {
             Params.Key k = Params.Key(i);
             (uint256 low, uint256 high) = d.params.bounds(k);
             assertGe(d.params.get(k), low);

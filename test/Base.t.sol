@@ -6,6 +6,8 @@ import {MockToken} from "./mocks/MockToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {FarmCore} from "../src/FarmCore.sol";
 import {FarmItems} from "../src/FarmItems.sol";
+import {FeeRouter} from "../src/FeeRouter.sol";
+import {MockGameRegistry} from "./mocks/MockGameRegistry.sol";
 import {Params} from "../src/Params.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import "../src/lib/Errors.sol";
@@ -24,6 +26,7 @@ abstract contract BaseTest is Test {
     function setUp() public virtual {
         vm.warp(1_800_000_000);
         vm.roll(1000);
+        vm.txGasPrice(20_000_000);
         launch = block.timestamp;
         alice = makeAddr("alice");
         bob = makeAddr("bob");
@@ -37,7 +40,15 @@ abstract contract BaseTest is Test {
         deployment = Deploy(fixture);
         d = deployment.deploy(
             Deploy.Config(
-                address(token), swarm, address(market), launch, keccak256(abi.encode(uint256(17), alice)), 23_000_000
+                address(token),
+                swarm,
+                address(market),
+                launch,
+                keccak256(abi.encode(uint256(17), alice)),
+                23_000_000,
+                0,
+                200,
+                1 ether
             )
         );
         vm.deal(alice, 10000 ether);
@@ -50,6 +61,39 @@ abstract contract BaseTest is Test {
         vm.prank(bob);
         token.approve(address(d.farm), type(uint256).max);
         d.rewards.advanceEpoch();
+    }
+
+    function mockRegistry(address market_, uint256 endowment_) internal returns (MockGameRegistry r) {
+        r = new MockGameRegistry(
+            address(token),
+            address(d.params),
+            market_,
+            launch,
+            keccak256(abi.encode(uint256(17), alice)),
+            23_000_000,
+            endowment_
+        );
+        address[10] memory a = [
+            address(d.pool),
+            address(d.rewards),
+            address(d.farm),
+            address(d.items),
+            address(d.packs),
+            address(d.starter),
+            address(d.fees),
+            address(d.grid),
+            address(d.season),
+            address(d.engine)
+        ];
+        for (uint256 i; i < 10; ++i) {
+            r.setModule(i, a[i]);
+        }
+    }
+
+    function newFees(address market_) internal returns (FeeRouter f) {
+        MockGameRegistry r = mockRegistry(market_, 0);
+        f = new FeeRouter(address(r));
+        r.setModule(6, address(f));
     }
 
     function fund(uint256 amount) internal {
