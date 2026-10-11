@@ -15,22 +15,22 @@ contract FeesParamsTest is BaseTest {
     function testExactEthSplitsHeartbeatCapAndPullPayments() public {
         vm.prank(address(d.packs));
         d.fees.depositPack{value: 100 ether}();
-        assertEq(d.fees.credit(team), 13 ether);
+        assertEq(d.fees.credit(team), 10 ether);
         assertEq(d.fees.heartbeatBalance(), 1 ether);
-        assertEq(d.fees.rewardETH(), 86 ether);
+        assertEq(d.fees.rewardETH(), 89 ether);
         vm.prank(address(d.grid));
         d.fees.depositLobby{value: 1 ether}();
-        assertEq(d.fees.credit(team), 13.13 ether);
-        assertEq(d.fees.rewardETH(), 86.87 ether);
+        assertEq(d.fees.credit(team), 10.1 ether);
+        assertEq(d.fees.rewardETH(), 89.9 ether);
         vm.prank(address(market));
         d.fees.depositSellTax{value: 1 ether}();
-        assertEq(d.fees.credit(team), 13.26 ether);
+        assertEq(d.fees.credit(team), 10.2 ether);
         d.fees.depositBaseFee{value: 2 ether}();
-        assertEq(d.fees.credit(team), 14.26 ether);
+        assertEq(d.fees.credit(team), 11.2 ether);
         uint256 before_ = team.balance;
         vm.prank(team);
         d.fees.withdraw();
-        assertEq(team.balance - before_, 14.26 ether);
+        assertEq(team.balance - before_, 11.2 ether);
         assertEq(d.fees.credit(team), 0);
         vm.expectRevert(InsufficientBalance.selector);
         vm.prank(team);
@@ -45,7 +45,7 @@ contract FeesParamsTest is BaseTest {
         vm.prank(address(d.packs));
         d.fees.depositPack{value: 100 ether}();
         assertEq(d.fees.heartbeatBalance(), 1 ether);
-        assertEq(d.fees.rewardETH(), 86 ether);
+        assertEq(d.fees.rewardETH(), 89 ether);
     }
 
     function testFuzzSplitsConserveEveryWei(uint96 amount) public {
@@ -54,7 +54,7 @@ contract FeesParamsTest is BaseTest {
         d.fees.depositPack{value: v}();
         assertEq(d.fees.credit(team) + d.fees.rewardETH() + d.fees.heartbeatBalance(), v);
         assertLe(d.fees.heartbeatBalance(), 1 ether);
-        assertEq(d.fees.credit(team), v * 1300 / 10000);
+        assertEq(d.fees.credit(team), v * 1000 / 10000);
     }
 
     function testBuyBackPoolOnlySlippageFailureRollbackAndDustGriefBlocked() public {

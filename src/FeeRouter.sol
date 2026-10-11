@@ -9,6 +9,7 @@ import "./lib/Errors.sol";
 
 contract FeeRouter is GameModule, ReentrancyGuard {
     address public constant team = 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007;
+    uint256 public constant TEAM_BPS = 1000;
 
     function HEARTBEAT_CAP() public view returns (uint256) {
         return params().get(Params.Key.HeartbeatCap);
@@ -93,9 +94,18 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         _route(3);
     }
 
+    /// @notice Launch-window buy tax above the normal fee: 100% to reward buys, no team or heartbeat share.
+    function depositLaunchTax() external payable {
+        if (msg.sender != address(market())) revert Unauthorized();
+        if (msg.value == 0) revert InvalidValue();
+        rewardETH += msg.value;
+        emit Routed(4, msg.value);
+    }
+
+    /// @dev Packs, lobbying and sell surcharge: 88% reward pool / 10% team / 2% heartbeat (capped, excess to pool).
     function _route(uint8 stream) private {
         if (msg.value == 0) revert InvalidValue();
-        uint256 t = msg.value * 1300 / 10000;
+        uint256 t = msg.value * TEAM_BPS / 10000;
         uint256 h = msg.value * params().get(Params.Key.HeartbeatBps) / 10000;
         uint256 cap = HEARTBEAT_CAP();
         uint256 room = cap > heartbeatBalance ? cap - heartbeatBalance : 0;

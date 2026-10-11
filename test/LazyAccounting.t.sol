@@ -151,6 +151,7 @@ contract LazyAccountingTest is BaseTest {
             uint256 quote = d.packs.quote(112);
             vm.prank(players[p]);
             d.packs.openPack{value: quote}(112);
+            veteran(players[p]);
             uint8[12] memory kinds;
             for (uint8 k; k < 12; ++k) {
                 kinds[k] = k;
@@ -385,6 +386,7 @@ contract LazyAccountingTest is BaseTest {
         uint256 quote = d.packs.quote(112);
         vm.prank(alice);
         d.packs.openPack{value: quote}(112);
+        veteran(alice);
         payPack(bob);
         place(alice, 0, 3, 0); // 250000 / 260000 of total allocation.
         place(bob, 0, 0, 0);

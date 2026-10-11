@@ -74,6 +74,15 @@ contract SeasonAuditTest is BaseTest {
         for (uint256 i; i < 28; ++i) {
             calmNext();
             step();
+            if (i % 8 == 7) {
+                // v3.3: owners act at least every 12 epochs to stay committed.
+                vm.prank(alice);
+                d.farm.sync();
+                vm.prank(bob);
+                d.farm.sync();
+                vm.prank(carol);
+                d.farm.sync();
+            }
         }
         vm.warp(d.season.deadline(0));
     }
@@ -89,7 +98,10 @@ contract SeasonAuditTest is BaseTest {
         assertEq(best, alice);
         assertGt(prize, 0);
         assertEq(d.rewards.pending(alice), before_ + prize);
-        assertEq(district, d.farm.district(alice));
+        // v3.3: a district whose spend is one wallet scores zero (10% wallet cap); no district qualifies here.
+        (uint256 aliceScore,) = d.season.districtScore(0, d.farm.district(alice));
+        assertEq(aliceScore, 0);
+        assertEq(district, 0);
         assertTrue(d.season.lotteryWon(0, alice));
         assertTrue(d.season.lotteryWon(0, bob));
         assertTrue(d.season.lotteryWon(0, makeAddr("carol")));
@@ -100,14 +112,6 @@ contract SeasonAuditTest is BaseTest {
         vm.expectRevert(InvalidValue.selector);
         vm.prank(alice);
         d.season.claimLottery(0);
-        vm.prank(alice);
-        uint256 pack = d.season.claimDistrict(0);
-        uint256 next = d.items.nextId();
-        resolvePack(pack);
-        assertGe(d.items.data(next).rarity, 1);
-        vm.expectRevert(InvalidValue.selector);
-        vm.prank(alice);
-        d.season.claimDistrict(0);
         vm.expectRevert(AlreadyDone.selector);
         d.season.finalize(0);
     }

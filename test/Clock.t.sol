@@ -27,9 +27,13 @@ contract ClockTest is Test {
     function testRobinhoodUsesArbSysNotL1EstimateAndHandlesExpiry() public {
         vm.chainId(4663);
         vm.roll(500);
-        MockArbSys implementation = new MockArbSys();
-        vm.etch(address(100), address(implementation).code);
-        MockArbSys(address(100)).set(9000, 8999, keccak256("L2 block"));
+        // Foundry 1.8 reserves 0x64 as a precompile; mock the ArbSys calls instead of etching code.
+        vm.mockCall(address(100), abi.encodeWithSignature("arbBlockNumber()"), abi.encode(uint256(9000)));
+        vm.mockCall(
+            address(100),
+            abi.encodeWithSignature("arbBlockHash(uint256)", uint256(8999)),
+            abi.encode(keccak256("L2 block"))
+        );
         ClockHarness clock = new ClockHarness();
         assertEq(clock.number(), 9000);
         assertEq(clock.hash(8999), keccak256("L2 block"));

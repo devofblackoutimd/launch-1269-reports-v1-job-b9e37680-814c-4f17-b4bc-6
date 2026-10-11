@@ -13,6 +13,7 @@ interface IHookRouter {
     function params() external view returns (address);
     function depositBaseFee() external payable;
     function depositSellTax() external payable;
+    function depositLaunchTax() external payable;
 }
 import {IV4PoolManager, PoolKey, SwapParams} from "./interfaces/IV4.sol";
 import "./lib/Errors.sol";
@@ -30,8 +31,16 @@ contract V4Market is ReentrancyGuard {
     IHookRouter public fees;
     uint256 public heldBase;
     uint256 public heldSellTax;
+    uint256 public heldLaunchTax;
+    /// @notice Launch protection, fixed in bytecode and anchored to the pool's one-time initialization.
+    uint256 public constant LAUNCH_TAX_BPS = 9000;
+    uint256 public constant LAUNCH_TAX_DECAY = 30 minutes;
+    uint256 public constant MAX_BUY = 0.5 ether;
+    uint256 public constant MAX_BUY_WINDOW = 60 minutes;
     event Bound(address indexed router, address indexed params);
     event FeesFlushed(uint256 base, uint256 sellTax);
+    event LaunchTaxFlushed(uint256 amount);
+    event LaunchTax(address indexed sender, uint256 ethInput, uint256 taxBps, uint256 launchTax);
     address public immutable networkRecipient;
     uint24 public immutable poolFee;
     int24 public immutable tickSpacing;
@@ -102,12 +111,16 @@ contract V4Market is ReentrancyGuard {
         if (address(fees) == address(0)) revert NotConfigured();
         uint256 base = heldBase;
         uint256 excess = heldSellTax;
-        if (base + excess == 0) revert InsufficientBalance();
+        uint256 launchTax = heldLaunchTax;
+        if (base + excess + launchTax == 0) revert InsufficientBalance();
         heldBase = 0;
         heldSellTax = 0;
+        heldLaunchTax = 0;
         if (base != 0) fees.depositBaseFee{value: base}();
         if (excess != 0) fees.depositSellTax{value: excess}();
+        if (launchTax != 0) fees.depositLaunchTax{value: launchTax}();
         emit FeesFlushed(base, excess);
+        if (launchTax != 0) emit LaunchTaxFlushed(launchTax);
     }
 
     function _routerMarketValid(address market_) internal view virtual returns (bool) {
@@ -241,6 +254,44 @@ contract V4Market is ReentrancyGuard {
         return 200;
     }
 
+    /// @notice Seconds since the pool was initialized (token launch). Zero before initialization.
+    function sinceLaunch() public view returns (uint256) {
+        return initializedAt == 0 ? 0 : block.timestamp - initializedAt;
+    }
+
+    /// @notice Total buy fee now, in bps: 90% at launch, decaying linearly to the normal fee over 30 minutes.
+    function currentBuyTaxBps() public view returns (uint256) {
+        uint256 normal = projectBps() + NETWORK_BPS;
+        uint256 t = sinceLaunch();
+        if (t >= LAUNCH_TAX_DECAY) return normal;
+        return normal + (LAUNCH_TAX_BPS - normal) * (LAUNCH_TAX_DECAY - t) / LAUNCH_TAX_DECAY;
+    }
+
+    /// @notice Seconds until the buy tax reaches the normal fee.
+    function launchTaxTimeLeft() public view returns (uint256) {
+        uint256 t = sinceLaunch();
+        return t >= LAUNCH_TAX_DECAY ? 0 : LAUNCH_TAX_DECAY - t;
+    }
+
+    /// @notice Largest ETH input per buy swap now; unlimited after the window.
+    function maxBuy() public view returns (uint256) {
+        return maxBuyTimeLeft() == 0 ? type(uint256).max : MAX_BUY;
+    }
+
+    function maxBuyTimeLeft() public view returns (uint256) {
+        uint256 t = sinceLaunch();
+        return t >= MAX_BUY_WINDOW ? 0 : MAX_BUY_WINDOW - t;
+    }
+
+    /// @notice One call for the site: tax bps, seconds of decay left, max buy, seconds of max-buy window left.
+    function launchStatus()
+        external
+        view
+        returns (uint256 taxBps, uint256 taxTimeLeft, uint256 maxBuyWei, uint256 maxBuyLeft)
+    {
+        return (currentBuyTaxBps(), launchTaxTimeLeft(), maxBuy(), maxBuyTimeLeft());
+    }
+
     function _sellFee(uint256 price) private returns (uint256 fee, uint256 hour, uint256 day, uint256 dev) {
         if (projectBps() == 100) return (100, 0, 0, 0);
         (hour, day) = imbalances();
@@ -258,7 +309,7 @@ contract V4Market is ReentrancyGuard {
         fee = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, (storedFeeWad + 1 ether - 1) / 1 ether);
     }
 
-    function beforeSwap(address, PoolKey calldata k, SwapParams calldata p, bytes calldata)
+    function beforeSwap(address sender, PoolKey calldata k, SwapParams calldata p, bytes calldata)
         external
         returns (bytes4, int256, uint24)
     {
@@ -267,9 +318,21 @@ contract V4Market is ReentrancyGuard {
         _observe(spot());
         if (!p.zeroForOne) return (this.beforeSwap.selector, 0, 0);
         uint256 ethIn = uint256(-p.amountSpecified);
-        uint256 fee = ethIn * (projectBps() + NETWORK_BPS) / 10000;
+        if (ethIn > maxBuy()) revert InvalidValue();
+        uint256 normal = ethIn * (projectBps() + NETWORK_BPS) / 10000;
+        uint256 taxBps = currentBuyTaxBps();
+        uint256 fee = ethIn * taxBps / 10000;
+        if (fee < normal) fee = normal;
         if (fee > uint256(uint128(type(int128).max))) revert InvalidValue();
-        _take(ethIn * projectBps() / 10000, 0, fee - ethIn * projectBps() / 10000);
+        uint256 base = ethIn * projectBps() / 10000;
+        uint256 network = fee == normal ? normal - base : ethIn * NETWORK_BPS / 10000;
+        uint256 launchTax = fee - base - network;
+        _take(base, 0, network);
+        if (launchTax != 0) {
+            manager.take(address(0), address(this), launchTax);
+            heldLaunchTax += launchTax;
+            emit LaunchTax(sender, ethIn, taxBps, launchTax);
+        }
         return (this.beforeSwap.selector, int256(fee << 128), 0);
     }
 
@@ -320,6 +383,7 @@ contract V4Market is ReentrancyGuard {
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         if (msg.sender != address(manager) || !buying) revert Unauthorized();
         (uint256 ethIn, uint256 minOut, address recipient) = abi.decode(data, (uint256, uint256, address));
+        if (ethIn > maxBuy()) revert InvalidValue();
         uint256 base = ethIn * projectBps() / 10000;
         uint256 network = ethIn * 25 / 10000;
         uint256 input = ethIn - base - network;

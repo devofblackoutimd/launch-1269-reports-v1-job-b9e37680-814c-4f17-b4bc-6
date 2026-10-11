@@ -51,6 +51,10 @@ contract ItemsTest is BaseTest {
         for (uint256 i; i < 20; ++i) {
             calmNext();
             step();
+            if (i % 8 == 0) {
+                vm.prank(alice);
+                d.farm.sync(); // v3.3: stay committed; idle farms stop earning activity XP
+            }
         }
         assertEq(d.farm.level(alice), 10);
         assertEq(d.farm.rooms(alice), 4);
@@ -65,20 +69,18 @@ contract ItemsTest is BaseTest {
         uint256 cost = d.packs.quote(112);
         vm.prank(alice);
         d.packs.openPack{value: cost}(112);
-        assertEq(d.farm.level(alice), 10);
+        // v3.3: paid XP is capped at 400 per day, so a whale stays at level 3 on day one.
+        assertEq(d.farm.xp(alice), 400);
+        assertEq(d.farm.level(alice), 3);
         assertFalse(d.farm.roomUnlocked(alice, 1));
-        assertTrue(d.farm.roomUnlocked(alice, 2));
-        assertTrue(d.farm.roomUnlocked(alice, 3));
-        assertEq(d.farm.rooms(alice), 3);
+        assertFalse(d.farm.roomUnlocked(alice, 2));
+        assertEq(d.farm.rooms(alice), 1);
         uint256 id = mintItem(alice, 0, 0);
         vm.expectRevert(InvalidValue.selector);
         vm.prank(alice);
         d.farm.place(id, 1, 0);
-        vm.prank(alice);
-        d.farm.place(id, 3, 0);
-        vm.warp(launch + 3 days);
+        vm.warp(vm.getBlockTimestamp() + 3 days);
         assertTrue(d.farm.roomUnlocked(alice, 1));
-        assertEq(d.farm.rooms(alice), 4);
     }
 
     function testEquipRarityGatesAndMythicGate() public {
@@ -100,18 +102,10 @@ contract ItemsTest is BaseTest {
         assertEq(d.farm.level(alice), 3);
         vm.prank(alice);
         d.farm.place(e, 0, 0);
-        q = d.packs.quote(16);
-        vm.prank(alice);
-        d.packs.openPack{value: q}(16);
-        assertEq(d.farm.level(alice), 5);
+        // Legendary and Mythic need age-gated levels 5 and 10; see V33Test for the full gate walk.
+        vm.expectRevert(InvalidValue.selector);
         vm.prank(alice);
         d.farm.place(l, 0, 1);
-        q = d.packs.quote(80);
-        vm.prank(alice);
-        d.packs.openPack{value: q}(80);
-        assertEq(d.farm.level(alice), 10);
-        vm.prank(alice);
-        d.farm.place(m, 0, 2);
     }
 
     function testComputeHashSupportHashAndBonusesReplaceDuo() public {
@@ -193,25 +187,7 @@ contract ItemsTest is BaseTest {
         assertEq(d.items.data(id).overclock, 5);
     }
 
-    function testMergeThreeIdenticalAndNoLegendaryMergeOrLockedExit() public {
-        uint256[3] memory ids;
-        for (uint256 i; i < 3; ++i) {
-            ids[i] = mintItem(alice, 0, 0);
-        }
-        uint256 supply = token.totalSupply();
-        uint256 before_ = token.balanceOf(address(d.pool));
-        vm.prank(alice);
-        uint256 r = d.farm.merge(ids, true);
-        assertEq(d.items.data(r).rarity, 1);
-        assertEq(d.items.inventory(alice), 1);
-        assertEq(token.totalSupply(), supply);
-        assertGt(token.balanceOf(address(d.pool)), before_);
-        for (uint256 i; i < 3; ++i) {
-            ids[i] = mintItem(alice, 0, 3);
-        }
-        vm.expectRevert(InvalidValue.selector);
-        vm.prank(alice);
-        d.farm.merge(ids, true);
+    function testLockedItemCannotBeScrappedUntilEpochRolls() public {
         uint256 gpu = place(alice, 1, 0, 0);
         calmNext();
         step();

@@ -3,16 +3,36 @@ pragma solidity =0.8.26 ^0.8.20;
 
 // src/lib/Errors.sol
 
-error Unauthorized();
-error InvalidAddress();
-error InvalidValue();
+library Unauthorized_0 {
+    error Unauthorized();
+}
+
+library InvalidAddress_0 {
+    error InvalidAddress();
+}
+
+library InvalidValue_0 {
+    error InvalidValue();
+}
 error TooEarly();
-error AlreadyDone();
-error NotConfigured();
+
+library AlreadyDone_0 {
+    error AlreadyDone();
+}
+
+library NotConfigured_0 {
+    error NotConfigured();
+}
 error CatchUpRequired();
-error InsufficientBalance();
+
+library InsufficientBalance_0 {
+    error InsufficientBalance();
+}
 error InvalidProof();
-error TransferFailed();
+
+library TransferFailed_0 {
+    error TransferFailed();
+}
 
 // src/interfaces/IV4.sol
 
@@ -550,6 +570,7 @@ interface IHookRouter {
     function params() external view returns (address);
     function depositBaseFee() external payable;
     function depositSellTax() external payable;
+    function depositLaunchTax() external payable;
 }
 
 /// @notice Optional, immutable ETH/token v4 hook + buy adapter. Must be selected as the launch pool's hook.
@@ -565,8 +586,16 @@ contract V4Market is ReentrancyGuard {
     IHookRouter public fees;
     uint256 public heldBase;
     uint256 public heldSellTax;
+    uint256 public heldLaunchTax;
+    /// @notice Launch protection, fixed in bytecode and anchored to the pool's one-time initialization.
+    uint256 public constant LAUNCH_TAX_BPS = 9000;
+    uint256 public constant LAUNCH_TAX_DECAY = 30 minutes;
+    uint256 public constant MAX_BUY = 0.5 ether;
+    uint256 public constant MAX_BUY_WINDOW = 60 minutes;
     event Bound(address indexed router, address indexed params);
     event FeesFlushed(uint256 base, uint256 sellTax);
+    event LaunchTaxFlushed(uint256 amount);
+    event LaunchTax(address indexed sender, uint256 ethInput, uint256 taxBps, uint256 launchTax);
     address public immutable networkRecipient;
     uint24 public immutable poolFee;
     int24 public immutable tickSpacing;
@@ -608,7 +637,7 @@ contract V4Market is ReentrancyGuard {
         if (
             manager_ == address(0) || token_ == address(0) || network_ == address(0) || spacing_ <= 0
                 || spacing_ > 32767 || fee_ != 0
-        ) revert InvalidValue();
+        ) revert InvalidValue_0.InvalidValue();
         manager = IV4PoolManager(manager_);
         token = token_;
         networkRecipient = network_;
@@ -620,13 +649,15 @@ contract V4Market is ReentrancyGuard {
 
     /// @notice The team's only privileged hook action. Swaps before binding escrow all project fees.
     function bindFeeRouter(address router) external nonReentrant {
-        if (msg.sender != team) revert Unauthorized();
-        if (address(fees) != address(0)) revert AlreadyDone();
-        if (router.code.length == 0) revert InvalidAddress();
+        if (msg.sender != team) revert Unauthorized_0.Unauthorized();
+        if (address(fees) != address(0)) revert AlreadyDone_0.AlreadyDone();
+        if (router.code.length == 0) revert InvalidAddress_0.InvalidAddress();
         IHookRouter candidate = IHookRouter(router);
-        if (candidate.token() != token || !_routerMarketValid(candidate.market())) revert InvalidValue();
+        if (candidate.token() != token || !_routerMarketValid(candidate.market())) {
+            revert InvalidValue_0.InvalidValue();
+        }
         address p = candidate.params();
-        if (p.code.length == 0) revert InvalidAddress();
+        if (p.code.length == 0) revert InvalidAddress_0.InvalidAddress();
         fees = candidate;
         params = IHookParams(p);
         emit Bound(router, p);
@@ -634,15 +665,19 @@ contract V4Market is ReentrancyGuard {
 
     /// @notice Permissionless forwarding, kept separate so a receiver cannot interrupt pool swaps.
     function flushFees() external nonReentrant {
-        if (address(fees) == address(0)) revert NotConfigured();
+        if (address(fees) == address(0)) revert NotConfigured_0.NotConfigured();
         uint256 base = heldBase;
         uint256 excess = heldSellTax;
-        if (base + excess == 0) revert InsufficientBalance();
+        uint256 launchTax = heldLaunchTax;
+        if (base + excess + launchTax == 0) revert InsufficientBalance_0.InsufficientBalance();
         heldBase = 0;
         heldSellTax = 0;
+        heldLaunchTax = 0;
         if (base != 0) fees.depositBaseFee{value: base}();
         if (excess != 0) fees.depositSellTax{value: excess}();
+        if (launchTax != 0) fees.depositLaunchTax{value: launchTax}();
         emit FeesFlushed(base, excess);
+        if (launchTax != 0) emit LaunchTaxFlushed(launchTax);
     }
 
     function _routerMarketValid(address market_) internal view virtual returns (bool) {
@@ -654,11 +689,11 @@ contract V4Market is ReentrancyGuard {
     }
 
     function _validateHookAddress() internal view virtual {
-        if (uint160(address(this)) & 0x3fff != HOOK_FLAGS) revert InvalidAddress();
+        if (uint160(address(this)) & 0x3fff != HOOK_FLAGS) revert InvalidAddress_0.InvalidAddress();
     }
 
     receive() external payable {
-        if (msg.sender != address(manager)) revert Unauthorized();
+        if (msg.sender != address(manager)) revert Unauthorized_0.Unauthorized();
     }
 
     function key() public view returns (PoolKey memory) {
@@ -666,20 +701,20 @@ contract V4Market is ReentrancyGuard {
     }
 
     function _check(PoolKey calldata k) private view {
-        if (msg.sender != address(manager) || keccak256(abi.encode(k)) != poolId) revert Unauthorized();
+        if (msg.sender != address(manager) || keccak256(abi.encode(k)) != poolId) revert Unauthorized_0.Unauthorized();
     }
 
     function spot() public view returns (uint256) {
         uint256 sqrt = uint160(uint256(manager.extsload(keccak256(abi.encode(poolId, uint256(6))))));
-        if (sqrt == 0) revert NotConfigured();
+        if (sqrt == 0) revert NotConfigured_0.NotConfigured();
         uint256 price = Math.mulDiv(Math.mulDiv(sqrt, sqrt, 1 << 96), 1 ether, 1 << 96);
-        if (price == 0 || price > 1e40) revert InvalidValue();
+        if (price == 0 || price > 1e40) revert InvalidValue_0.InvalidValue();
         return price;
     }
 
     function afterInitialize(address, PoolKey calldata k, uint160, int24) external returns (bytes4) {
         _check(k);
-        if (initializedAt != 0) revert AlreadyDone();
+        if (initializedAt != 0) revert AlreadyDone_0.AlreadyDone();
         _observe(spot());
         return this.afterInitialize.selector;
     }
@@ -708,15 +743,15 @@ contract V4Market is ReentrancyGuard {
 
     function _cumulativeAt(uint256 minute) private view returns (uint256) {
         uint256 ts = minute * 60;
-        if (ts < initializedAt) revert NotConfigured();
+        if (ts < initializedAt) revert NotConfigured_0.NotConfigured();
         if (ts >= updatedAt) return cumulative + (1e60 / lastPrice) * (ts - updatedAt);
         Observation memory o = observations[minute % 32];
-        if (o.minute != minute) revert NotConfigured();
+        if (o.minute != minute) revert NotConfigured_0.NotConfigured();
         return o.cumulative;
     }
 
     function twap() public view returns (uint256) {
-        if (initializedAt == 0 || block.timestamp < initializedAt + 31 minutes) revert NotConfigured();
+        if (initializedAt == 0 || block.timestamp < initializedAt + 31 minutes) revert NotConfigured_0.NotConfigured();
         uint256 minute = block.timestamp / 60;
         uint256 averageETH = (_cumulativeAt(minute) - _cumulativeAt(minute - 30)) / 30 minutes;
         return 1e60 / averageETH;
@@ -727,7 +762,7 @@ contract V4Market is ReentrancyGuard {
     }
 
     function _record(bool sell, uint256 amount) private {
-        if (amount > type(uint192).max) revert InvalidValue();
+        if (amount > type(uint192).max) revert InvalidValue_0.InvalidValue();
         uint256 p = block.timestamp / 5 minutes;
         Volume storage a = shortVolumes[p % 12];
         if (a.period != p) {
@@ -776,6 +811,44 @@ contract V4Market is ReentrancyGuard {
         return 200;
     }
 
+    /// @notice Seconds since the pool was initialized (token launch). Zero before initialization.
+    function sinceLaunch() public view returns (uint256) {
+        return initializedAt == 0 ? 0 : block.timestamp - initializedAt;
+    }
+
+    /// @notice Total buy fee now, in bps: 90% at launch, decaying linearly to the normal fee over 30 minutes.
+    function currentBuyTaxBps() public view returns (uint256) {
+        uint256 normal = projectBps() + NETWORK_BPS;
+        uint256 t = sinceLaunch();
+        if (t >= LAUNCH_TAX_DECAY) return normal;
+        return normal + (LAUNCH_TAX_BPS - normal) * (LAUNCH_TAX_DECAY - t) / LAUNCH_TAX_DECAY;
+    }
+
+    /// @notice Seconds until the buy tax reaches the normal fee.
+    function launchTaxTimeLeft() public view returns (uint256) {
+        uint256 t = sinceLaunch();
+        return t >= LAUNCH_TAX_DECAY ? 0 : LAUNCH_TAX_DECAY - t;
+    }
+
+    /// @notice Largest ETH input per buy swap now; unlimited after the window.
+    function maxBuy() public view returns (uint256) {
+        return maxBuyTimeLeft() == 0 ? type(uint256).max : MAX_BUY;
+    }
+
+    function maxBuyTimeLeft() public view returns (uint256) {
+        uint256 t = sinceLaunch();
+        return t >= MAX_BUY_WINDOW ? 0 : MAX_BUY_WINDOW - t;
+    }
+
+    /// @notice One call for the site: tax bps, seconds of decay left, max buy, seconds of max-buy window left.
+    function launchStatus()
+        external
+        view
+        returns (uint256 taxBps, uint256 taxTimeLeft, uint256 maxBuyWei, uint256 maxBuyLeft)
+    {
+        return (currentBuyTaxBps(), launchTaxTimeLeft(), maxBuy(), maxBuyTimeLeft());
+    }
+
     function _sellFee(uint256 price) private returns (uint256 fee, uint256 hour, uint256 day, uint256 dev) {
         if (projectBps() == 100) return (100, 0, 0, 0);
         (hour, day) = imbalances();
@@ -793,18 +866,30 @@ contract V4Market is ReentrancyGuard {
         fee = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, (storedFeeWad + 1 ether - 1) / 1 ether);
     }
 
-    function beforeSwap(address, PoolKey calldata k, SwapParams calldata p, bytes calldata)
+    function beforeSwap(address sender, PoolKey calldata k, SwapParams calldata p, bytes calldata)
         external
         returns (bytes4, int256, uint24)
     {
         _check(k);
-        if (p.amountSpecified >= 0) revert InvalidValue();
+        if (p.amountSpecified >= 0) revert InvalidValue_0.InvalidValue();
         _observe(spot());
         if (!p.zeroForOne) return (this.beforeSwap.selector, 0, 0);
         uint256 ethIn = uint256(-p.amountSpecified);
-        uint256 fee = ethIn * (projectBps() + NETWORK_BPS) / 10000;
-        if (fee > uint256(uint128(type(int128).max))) revert InvalidValue();
-        _take(ethIn * projectBps() / 10000, 0, fee - ethIn * projectBps() / 10000);
+        if (ethIn > maxBuy()) revert InvalidValue_0.InvalidValue();
+        uint256 normal = ethIn * (projectBps() + NETWORK_BPS) / 10000;
+        uint256 taxBps = currentBuyTaxBps();
+        uint256 fee = ethIn * taxBps / 10000;
+        if (fee < normal) fee = normal;
+        if (fee > uint256(uint128(type(int128).max))) revert InvalidValue_0.InvalidValue();
+        uint256 base = ethIn * projectBps() / 10000;
+        uint256 network = fee == normal ? normal - base : ethIn * NETWORK_BPS / 10000;
+        uint256 launchTax = fee - base - network;
+        _take(base, 0, network);
+        if (launchTax != 0) {
+            manager.take(address(0), address(this), launchTax);
+            heldLaunchTax += launchTax;
+            emit LaunchTax(sender, ethIn, taxBps, launchTax);
+        }
         return (this.beforeSwap.selector, int256(fee << 128), 0);
     }
 
@@ -813,16 +898,16 @@ contract V4Market is ReentrancyGuard {
         returns (bytes4, int128)
     {
         _check(k);
-        if (p.amountSpecified >= 0) revert InvalidValue();
+        if (p.amountSpecified >= 0) revert InvalidValue_0.InvalidValue();
         uint256 price = spot();
         _observe(price);
         int128 ethDelta = int128(delta >> 128);
         if (p.zeroForOne) {
-            if (ethDelta >= 0) revert InvalidValue();
+            if (ethDelta >= 0) revert InvalidValue_0.InvalidValue();
             _record(false, uint256(-int256(ethDelta)));
             return (this.afterSwap.selector, 0);
         }
-        if (ethDelta <= 0) revert InvalidValue();
+        if (ethDelta <= 0) revert InvalidValue_0.InvalidValue();
         uint256 output = uint256(uint128(ethDelta));
         _record(true, output);
         (uint256 bps, uint256 hour, uint256 day, uint256 dev) = _sellFee(price);
@@ -844,7 +929,7 @@ contract V4Market is ReentrancyGuard {
 
     function buy(uint256 minOut, address recipient) external payable nonReentrant returns (uint256 received) {
         if (msg.sender != address(fees) || recipient == address(0) || msg.value == 0 || minOut == 0) {
-            revert Unauthorized();
+            revert Unauthorized_0.Unauthorized();
         }
         twap();
         buying = true;
@@ -853,8 +938,9 @@ contract V4Market is ReentrancyGuard {
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        if (msg.sender != address(manager) || !buying) revert Unauthorized();
+        if (msg.sender != address(manager) || !buying) revert Unauthorized_0.Unauthorized();
         (uint256 ethIn, uint256 minOut, address recipient) = abi.decode(data, (uint256, uint256, address));
+        if (ethIn > maxBuy()) revert InvalidValue_0.InvalidValue();
         uint256 base = ethIn * projectBps() / 10000;
         uint256 network = ethIn * 25 / 10000;
         uint256 input = ethIn - base - network;
@@ -868,7 +954,7 @@ contract V4Market is ReentrancyGuard {
             ethDelta >= 0 || uint256(-int256(ethDelta)) != input || tokenDelta <= 0
                 || uint256(uint128(tokenDelta)) < minOut
         ) {
-            revert InsufficientBalance();
+            revert InsufficientBalance_0.InsufficientBalance();
         }
         _record(false, input);
         manager.settle{value: input}();
@@ -880,10 +966,10 @@ contract V4Market is ReentrancyGuard {
 
     function withdrawNetwork() external nonReentrant {
         uint256 amount = networkCredit;
-        if (amount == 0) revert InsufficientBalance();
+        if (amount == 0) revert InsufficientBalance_0.InsufficientBalance();
         networkCredit = 0;
         (bool ok,) = networkRecipient.call{value: amount}("");
-        if (!ok) revert TransferFailed();
+        if (!ok) revert TransferFailed_0.TransferFailed();
         emit NetworkPaid(amount);
     }
 }

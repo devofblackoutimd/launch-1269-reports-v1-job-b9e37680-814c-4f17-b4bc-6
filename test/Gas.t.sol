@@ -73,6 +73,7 @@ contract GasTest is BaseTest {
         uint256 q = d.packs.quote(112);
         vm.prank(alice);
         d.packs.openPack{value: q}(112);
+        veteran(alice);
         vm.warp(launch + 3 days);
         entropy();
         d.rewards.advanceEpoch();

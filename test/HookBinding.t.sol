@@ -38,6 +38,7 @@ contract HookBindingTest is BaseTest {
         hook = new TestV4Market(address(manager), address(token), network);
         vm.deal(address(manager), 100 ether);
         manager.initializeHook(hook);
+        vm.warp(vm.getBlockTimestamp() + 60 minutes); // past the v3.3 launch tax and max-buy window
     }
 
     function _buy() private {
@@ -77,7 +78,7 @@ contract HookBindingTest is BaseTest {
         hook.flushFees();
         assertEq(hook.heldBase(), 0);
         assertEq(hook.heldSellTax(), 0);
-        assertEq(f.credit(team), base / 2 + surcharge * 1300 / 10000);
+        assertEq(f.credit(team), base / 2 + surcharge * 1000 / 10000);
         assertEq(f.heartbeatBalance(), surcharge * 200 / 10000);
         assertEq(f.credit(team) + f.heartbeatBalance() + f.rewardETH(), base + surcharge);
         assertEq(address(hook).balance, networkDue);

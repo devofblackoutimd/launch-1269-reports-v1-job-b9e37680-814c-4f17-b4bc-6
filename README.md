@@ -1,4 +1,7 @@
-# BLACKOUT v3.2
+# BLACKOUT v3.3
+
+v3.3 (source only, no deployment): idle farms leave the hash denominator after 12 epochs without an owner action, there are age gates and a 400/day paid-XP cap, merging is removed, the best district is chosen by average spend per active farm with a 10% wallet cap, packs/lobby/surcharge split 88/10/2, and the hook adds launch protection (90%→2.25% buy tax over 30 min, 0.5 ETH max buy for 60 min) with PackSale opening at launch + 60 min. See [report.md](report.md), [docs/review-v33.md](docs/review-v33.md) and the v3.3 section of [docs/launch-v31.md](docs/launch-v31.md). The v3.2 report is now [docs/report-v32.md](docs/report-v32.md).
+
 
 Immutable token-endowed mining game on the existing v3 codebase. No deployment, broadcast, token creation/replacement or live spending occurred. Build settings and dependencies are unchanged.
 

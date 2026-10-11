@@ -43,7 +43,7 @@ abstract contract BaseTest is Test {
                 address(token),
                 swarm,
                 address(market),
-                launch,
+                launch - 1 hours,
                 keccak256(abi.encode(uint256(17), alice)),
                 23_000_000,
                 0,
@@ -63,12 +63,28 @@ abstract contract BaseTest is Test {
         d.rewards.advanceEpoch();
     }
 
+    /// @dev Fixture token launch is one hour before `launch`, so PackSale (launch + 60 min) is open at setUp.
+    function tokenLaunch() internal view returns (uint256) {
+        return launch - 1 hours;
+    }
+
+    /// @dev Legacy fixtures: backdate a registered farm by five days and give it level-10 XP.
+    function veteran(address p) internal {
+        bytes32 base = keccak256(abi.encode(p, uint256(2)));
+        uint256 s0 = uint256(vm.load(address(d.farm), base));
+        uint256 born = vm.getBlockTimestamp() - 5 days;
+        s0 = (s0 & ~uint256(type(uint64).max)) | born;
+        vm.store(address(d.farm), base, bytes32(s0));
+        vm.store(address(d.farm), bytes32(uint256(base) + 2), bytes32(uint256(2800)));
+        assertEq(d.farm.level(p), 10);
+    }
+
     function mockRegistry(address market_, uint256 endowment_) internal returns (MockGameRegistry r) {
         r = new MockGameRegistry(
             address(token),
             address(d.params),
             market_,
-            launch,
+            launch - 1 hours,
             keccak256(abi.encode(uint256(17), alice)),
             23_000_000,
             endowment_

@@ -46,7 +46,7 @@ contract V4IntegrationTest is BaseTest {
         hook.bindFeeRouter(address(router));
         manager.initialize(hook.key(), uint160(1 << 96));
         manager.unlock(abi.encode(uint8(0), uint256(1000 ether)));
-        vm.warp(vm.getBlockTimestamp() + 31 minutes);
+        vm.warp(vm.getBlockTimestamp() + 60 minutes);
     }
     receive() external payable {}
 

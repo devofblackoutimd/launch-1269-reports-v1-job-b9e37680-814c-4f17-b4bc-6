@@ -106,3 +106,14 @@ Explain allocation dilution and outstanding reservations to users using [the v3.
 For each season, announce `Season.deadline(week)` (week end + seven days). Players/sponsors must finish all that week's epochs before that timestamp to compete. After the cutoff anyone prepares the constant-size lottery and finalizes with timely entropy. Late mining settlement remains payable but cannot change finalized standings. Preparation and rearm are unpaid; a successful nonempty finalization earns the small bounty.
 
 The simulation's gas assumptions and externally funded policy-run valuation are scenarios, not refreshed network quotes. Re-estimate chain gas/data fees, retained bounty margins and public bot willingness immediately before any independently authorized launch. The pending production addresses/root/factory in this procedure are configuration inputs from that launch, never guessed stand-ins.
+
+## v3.3 changes to the launch steps
+
+The 8+4 contracts, constructor arguments and enrollment are unchanged. Regenerate and check the module pins (`python3 tools/pin_module_code.py --check`) against the v3.3 artifacts.
+
+1. **Hook source.** Submit the regenerated [launch/V4Market.sol](../launch/V4Market.sol) (`forge flatten src/V4Market.sol`). It has the same 5 constructor arguments and flag mask `0x10cc`. The launch protection is constant in bytecode: 90% buy tax decaying linearly to 2.25% over 30 minutes, 0.5 ETH maximum input per buy swap for 60 minutes, both counted from the pool's `afterInitialize` timestamp. Tax above the normal fee is escrowed as `heldLaunchTax` and, after the team binds the router, `flushFees()` sends it to `FeeRouter.depositLaunchTax` (100% reward pool).
+2. **GameRegistry `tokenLaunchTimestamp`** must be the pool initialization timestamp of the token launch. PackSale opens at exactly that value plus 60 minutes (`PackSale.opensAt()`), and this cannot be changed later. If the game is deployed after that time, sales open as soon as enrollment completes.
+3. **Binding before the first hour ends.** Launch tax collected before `bindFeeRouter` stays in the hook. Bind and flush as soon as the game is enrolled. Nothing is lost by binding later.
+4. **Site.** Read `V4Market.launchStatus()` (tax bps, seconds of decay left, max buy, seconds of max-buy window left) and `PackSale.opensAt()` / `isOpen()`. Show `FarmRewards.expiresAt(player)` and `committed(player)`, and prompt players to call `FarmCore.sync()` (or claim, install, repair, pack) at least every 3 days. Show `FarmCore.level`, `xpLevel`, `maxLevelByAge` and `paidXpRoom`.
+5. **Fee split.** FeeRouter now sends 10% of pack, lobby and surcharge ETH to the team, down from 13%. The base fee stays at 50/50.
+6. **Operations.** advanceEpoch stays permissionless and O(1). No keeper is needed for expiry. Season finalize now ranks districts by average spend per active farm with a 10% wallet cap, so publish the rule to players.

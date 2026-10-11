@@ -43,6 +43,13 @@ contract Season is GameModule, ReentrancyGuard {
     mapping(uint256 => mapping(address => bool)) public lotteryClaimed;
     mapping(uint256 => mapping(address => bool)) public completed;
     uint256 public constant SETTLEMENT_GRACE = 7 days;
+    /// @notice One wallet counts for at most 1/WALLET_SHARE_DIV (10%) of its district score.
+    uint256 public constant WALLET_SHARE_DIV = 10;
+    uint256 public constant TOP = 10;
+    mapping(uint256 => mapping(address => uint256)) public districtSpendOf;
+    mapping(uint256 => mapping(uint256 => uint256)) public activeFarms;
+    mapping(uint256 => mapping(address => bool)) public activeCounted;
+    mapping(uint256 => mapping(uint256 => address[10])) private topSpenders;
     event SeasonPrepared(uint256 indexed week, uint256 target);
     event SeasonFinalized(uint256 indexed week, uint256 district, address best, bytes32 seed);
     event LotteryWinner(uint256 indexed week, address indexed player);
@@ -86,7 +93,69 @@ contract Season is GameModule, ReentrancyGuard {
         if (block.timestamp < launchTime()) revert TooEarly();
         uint256 w = (block.timestamp - launchTime()) / 7 days;
         spend[w][p] += value;
-        if (districtSpend) seasons[w].districtSpend[district(p)] += value;
+        if (districtSpend && value != 0) {
+            uint256 d = district(p);
+            seasons[w].districtSpend[d] += value;
+            districtSpendOf[w][p] += value;
+            _track(w, d, p);
+        }
+    }
+
+    /// @dev Exact top-10 by district spend. Spend only grows, so an untracked wallet never exceeds the minimum.
+    /// Only wallets above the 10% cap matter, and at most ten can be (they would otherwise exceed the total).
+    function _track(uint256 w, uint256 d, address p) private {
+        address[10] storage top = topSpenders[w][d];
+        uint256 low = type(uint256).max;
+        uint256 slot;
+        for (uint256 i; i < TOP; ++i) {
+            address q = top[i];
+            if (q == p) return;
+            if (q == address(0)) {
+                top[i] = p;
+                return;
+            }
+            uint256 v = districtSpendOf[w][q];
+            if (v < low) {
+                low = v;
+                slot = i;
+            }
+        }
+        if (districtSpendOf[w][p] > low) top[slot] = p;
+    }
+
+    /// @notice District score: capped district spend divided by active farms in that district this week.
+    /// The cap c solves c = (sum of min(spend_i, c)) / 10, so no wallet exceeds 10% of the counted spend.
+    function districtScore(uint256 w, uint256 d) public view returns (uint256 score, uint256 counted) {
+        uint256 farms_ = activeFarms[w][d];
+        if (farms_ == 0) return (0, 0);
+        uint256[10] memory v;
+        address[10] storage top = topSpenders[w][d];
+        for (uint256 i; i < TOP; ++i) {
+            if (top[i] != address(0)) v[i] = districtSpendOf[w][top[i]];
+        }
+        // Sort descending (ten elements).
+        for (uint256 i = 1; i < TOP; ++i) {
+            uint256 x = v[i];
+            uint256 j = i;
+            while (j != 0 && v[j - 1] < x) {
+                v[j] = v[j - 1];
+                --j;
+            }
+            v[j] = x;
+        }
+        uint256 rest = seasons[w].districtSpend[d];
+        counted = rest;
+        // k wallets capped: c = (total - sum of top k) / (10 - k); valid when v[k] <= c.
+        uint256 head;
+        for (uint256 k; k < TOP; ++k) {
+            uint256 c = (rest - head) / (WALLET_SHARE_DIV - k);
+            if (v[k] <= c) {
+                counted = k == 0 ? rest : c * WALLET_SHARE_DIV;
+                break;
+            }
+            head += v[k];
+        }
+        score = counted / farms_;
     }
 
     function _add(uint256 w, uint256 i, uint256 amount, bool subtract) private {
@@ -105,6 +174,10 @@ contract Season is GameModule, ReentrancyGuard {
     function recordActivity(address p, uint256 w, uint256 gross) external {
         if (msg.sender != address(rewards())) revert Unauthorized();
         if (block.timestamp >= deadline(w) || completed[w][p]) return;
+        if (!activeCounted[w][p]) {
+            activeCounted[w][p] = true;
+            activeFarms[w][district(p)]++;
+        }
         tickets[w][p]++;
         yield[w][p] += gross;
     }
@@ -168,8 +241,13 @@ contract Season is GameModule, ReentrancyGuard {
         if (h == bytes32(0)) revert NotConfigured();
         s.seed = keccak256(abi.encode(h, address(this), w, s.totalTickets));
         s.finalized = true;
+        (uint256 bestDistrict,) = districtScore(w, 0);
         for (uint256 d = 1; d < 8; ++d) {
-            if (s.districtSpend[d] > s.districtSpend[s.winnerDistrict]) s.winnerDistrict = uint8(d);
+            (uint256 score,) = districtScore(w, d);
+            if (score > bestDistrict) {
+                bestDistrict = score;
+                s.winnerDistrict = uint8(d);
+            }
         }
         uint256 left = s.totalTickets;
         for (uint256 i; i < 3 && left != 0; ++i) {

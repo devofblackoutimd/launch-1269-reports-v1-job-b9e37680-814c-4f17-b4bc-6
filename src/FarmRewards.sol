@@ -15,6 +15,8 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     uint256 public constant EPOCH = 6 hours;
     uint256 public constant MAX_SETTLE = 8;
     uint256 public constant PRECISION = 1e27;
+    /// @notice A commitment stays in the global denominator for this many epochs after the last owner action.
+    uint256 public constant IDLE_EPOCHS = 12;
 
     struct Epoch {
         uint64 start;
@@ -58,6 +60,8 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         uint256 weight;
         uint256 nextWeight;
         uint256 weightEpoch;
+        uint256 weightExpiry; // First epoch in which `weight` no longer counts.
+        uint256 nextExpiry; // First epoch in which `nextWeight` no longer counts.
         bool initialized;
         uint256 pending;
         uint256 matured;
@@ -79,6 +83,10 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     uint256 public accRewardPerHash;
     mapping(uint256 => uint256) public lastEpochInWeek;
     mapping(address => Account) private accounts;
+    /// @notice Committed hash that leaves the denominator when epoch `id` starts.
+    mapping(uint256 => uint256) public expiring;
+    event Committed(address indexed player, uint256 weight, uint256 fromEpoch, uint256 expiresAt);
+    event Expired(uint256 indexed epoch, uint256 hash);
     event EpochStarted(uint256 indexed epoch, uint256 start, uint256 end, address caller);
     event EpochClosed(uint256 indexed epoch, uint256 budget, uint256 roster);
     event EpochSettled(uint256 indexed epoch, uint256 mining, uint256 recycled);
@@ -176,6 +184,13 @@ contract FarmRewards is GameModule, ReentrancyGuard {
         Epoch storage e = epochs[epoch];
         e.start = uint64(block.timestamp);
         e.end = uint64(block.timestamp + EPOCH);
+        uint256 gone = expiring[epoch];
+        if (gone != 0) {
+            // O(1): one bucket per epoch, filled by owner actions, never a farm loop.
+            nextTotalHash -= gone;
+            delete expiring[epoch];
+            emit Expired(epoch, gone);
+        }
         e.raw = nextTotalHash;
         e.target = params().get(Params.Key.DemandTarget) * 6;
         e.tariff = params().get(Params.Key.TariffBps);
@@ -213,18 +228,52 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     }
 
     /// @dev Owner configuration changes take effect next epoch. Settlement alone never changes weights.
+    /// @dev Every owner action re-commits the farm for IDLE_EPOCHS epochs starting next epoch.
     function setWeight(address p, uint256 weight) external onlyCore {
         Account storage a = accounts[p];
         if (!a.initialized || a.lastSettled < settledEpoch) revert CatchUpRequired();
-        if (a.weightEpoch <= epoch) a.weight = a.nextWeight;
-        nextTotalHash = nextTotalHash - a.nextWeight + weight;
-        a.nextWeight = weight;
-        a.weightEpoch = epoch + 1;
+        _commit(a, p, weight);
     }
 
+    function _commit(Account storage a, address p, uint256 weight) private {
+        if (a.weightEpoch <= epoch) {
+            a.weight = a.nextWeight;
+            a.weightExpiry = a.nextExpiry;
+        }
+        // Buckets for epochs <= current have already been applied; later buckets still hold this commitment.
+        if (a.nextExpiry > epoch) {
+            nextTotalHash -= a.nextWeight;
+            expiring[a.nextExpiry] -= a.nextWeight;
+        }
+        uint256 expiry = epoch + 1 + IDLE_EPOCHS;
+        nextTotalHash += weight;
+        expiring[expiry] += weight;
+        a.nextWeight = weight;
+        a.nextExpiry = expiry;
+        a.weightEpoch = epoch + 1;
+        emit Committed(p, weight, epoch + 1, expiry);
+    }
+
+    /// @notice Weight counted in epoch `e`'s denominator; zero once the farm has been idle for IDLE_EPOCHS.
     function farmWeight(address p, uint256 e) public view returns (uint256) {
         Account storage a = accounts[p];
-        return e >= a.weightEpoch ? a.nextWeight : a.weight;
+        if (e >= a.weightEpoch) return e < a.nextExpiry ? a.nextWeight : 0;
+        return e < a.weightExpiry ? a.weight : 0;
+    }
+
+    /// @notice Configured allocation hash, whether or not it is currently committed.
+    function configuredWeight(address p) external view returns (uint256) {
+        return accounts[p].nextWeight;
+    }
+
+    /// @notice First epoch in which the farm's latest commitment no longer counts.
+    function expiresAt(address p) external view returns (uint256) {
+        return accounts[p].nextExpiry;
+    }
+
+    function committed(address p) external view returns (bool) {
+        Account storage a = accounts[p];
+        return a.nextWeight != 0 && a.nextExpiry > epoch + 1;
     }
 
     function lastSettled(address p) external view returns (uint256) {
@@ -381,6 +430,9 @@ contract FarmRewards is GameModule, ReentrancyGuard {
 
     function claim(uint256 amount) external nonReentrant returns (uint256 net) {
         _settle(msg.sender, MAX_SETTLE);
+        Account storage a = accounts[msg.sender];
+        // Claim is an owner action: re-commit when fully caught up. Never blocks the withdrawal.
+        if (a.initialized && a.lastSettled >= settledEpoch && a.nextWeight != 0) _commit(a, msg.sender, a.nextWeight);
         uint256 tax = _consume(msg.sender, amount, true);
         queuedTax += tax;
         net = amount - tax;

@@ -92,6 +92,7 @@ contract MarketTest is BaseTest {
     }
 
     function testBuyChargesOnlyBaseAndNetworkPullPayment() public {
+        vm.warp(hook.initializedAt() + 60 minutes);
         SwapParams memory p = SwapParams(true, -int256(1 ether), 4295128740);
         (, int256 delta,) = manager.invokeBefore(hook, p);
         assertEq(uint256(delta >> 128), 0.0225 ether);

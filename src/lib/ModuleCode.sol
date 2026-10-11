@@ -5,15 +5,15 @@ pragma solidity 0.8.26;
 library ModuleCode {
     function hash(uint256 role) internal pure returns (bytes32) {
         if (role == 0) return 0x75d36faf4f2b1db2ca8c10b0e3b81c2b036d53b48b61e7f2686c8f1139f4b7c5; // RewardPool
-        if (role == 1) return 0x5ce935167ba77d01e91c28007bdc0ab44547238d35c6365690418d46754b1afe; // FarmRewards
-        if (role == 2) return 0xb419c986b6339e2c36eb822a6f3f5e4b51ef9b59f97945569faf35022203066d; // FarmCore
+        if (role == 1) return 0xe28b25cdb09fb35143b2c16b3584b33bacacb2ff8887aae953b8045c8430fabc; // FarmRewards
+        if (role == 2) return 0xb5a814f76859c0b370e6c0f6267920f72c2adc9f2c230249b02d64bacdbfbd16; // FarmCore
         if (role == 3) return 0xd627320cdc423d7b87c70501f13131f89874bcd4dc85c1aead2309d8e45fd4cb; // FarmItems
-        if (role == 4) return 0x8db7c8c90a7b6e710a71a8ea7014a8c1e6564626800f5aae470a3e6bb902f7a7; // PackSale
-        if (role == 5) return 0x5141cf68f4bc1f80c065d7bea9ca352bc4522deeb0690df52d16d54da7d85c22; // StarterClaim
-        if (role == 6) return 0x8db4f3c321bbab0c34d438565ef6dcb94511b01c56d73fd6a3e184d7db74def6; // FeeRouter
-        if (role == 7) return 0xa1b3c2f9e98590826e04df1b6317ce0fee41ee36f0f20834c73857151d69dd55; // GridOperator
-        if (role == 8) return 0xcc1a9aab380fa7e4a7ff694201bcba3694724051d46f8737e9b8fe2620f98c54; // Season
-        if (role == 9) return 0x9bad3feed72f7dac0e20e1d5134c72368cd7e1bd833338b1181e25f356bfd6e1; // FarmEngine
+        if (role == 4) return 0x216d66d0c7092a035ed4c4de8f01f55fea00e44daff31c4f9c9a09616efd7fc2; // PackSale
+        if (role == 5) return 0xc89de31e88835e642e4ce9524cf4322aace81b51f7019af2491e7d5a7ee79b5d; // StarterClaim
+        if (role == 6) return 0x0186bb3d12f2127e00472d7ada741f889c2cd4199d1a33f2ce1beb75019dce88; // FeeRouter
+        if (role == 7) return 0xda31bc6776fb4ea85eb20dd0d5380d4ad89b6b131ef5388c6f26db659c185f47; // GridOperator
+        if (role == 8) return 0xe81eadb184e540e1873a021671437dbdde1c0308a56077bebe3a8e457adb503e; // Season
+        if (role == 9) return 0x160def527bce4d35f9a562040a1634d1c82c49cb6c70f01b32bddc58f69303ce; // FarmEngine
         return bytes32(0);
     }
 }

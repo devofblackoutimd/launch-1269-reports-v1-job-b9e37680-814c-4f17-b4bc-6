@@ -10,7 +10,7 @@ contract EndowmentGameTest is BaseTest {
                 address(token),
                 swarm,
                 address(market),
-                launch,
+                tokenLaunch(),
                 keccak256("endowed fixture root"),
                 123,
                 2500,

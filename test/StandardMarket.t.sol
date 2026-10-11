@@ -28,7 +28,7 @@ contract StandardMarketTest is BaseTest {
         vm.deal(address(manager), 1000 ether);
         token.transfer(address(manager), 1000 ether);
         manager.initializeHook(hook);
-        vm.warp(launch + 31 minutes);
+        vm.warp(launch + 60 minutes);
     }
 
     function testStandardBuyOnePercentEvenSplitAndNetworkQuarterPercent() public {

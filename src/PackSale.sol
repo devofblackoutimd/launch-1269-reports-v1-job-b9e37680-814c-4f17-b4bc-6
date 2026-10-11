@@ -25,6 +25,8 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     uint256 public sold;
+    /// @notice Sales open this long after the immutable token launch timestamp in GameRegistry.
+    uint256 public constant OPEN_DELAY = 60 minutes;
     uint256 public pausedUntil;
     uint256 public nextPauseAt;
     event SalePaused(uint256 until);
@@ -78,12 +80,20 @@ contract PackSale is GameModule, ReentrancyGuard {
         return registry.launchTime();
     }
 
+    function opensAt() public view returns (uint256) {
+        return registry.launchTime() + OPEN_DELAY;
+    }
+
+    function isOpen() public view returns (bool) {
+        return block.timestamp >= opensAt() && !paused();
+    }
+
     function price() public view returns (uint256) {
         return priceAt(sold);
     }
 
     function priceAt(uint256 sales) public view returns (uint256 p) {
-        uint256 elapsed = block.timestamp > launchTime() ? block.timestamp - launchTime() : 0;
+        uint256 elapsed = block.timestamp > opensAt() ? block.timestamp - opensAt() : 0;
         uint256 target = params().get(Params.Key.DemandTarget);
         int256 ahead = int256(sales * 1 ether) - int256(elapsed * target * 1 ether / 1 hours);
         int256 exponent;
@@ -114,7 +124,8 @@ contract PackSale is GameModule, ReentrancyGuard {
     }
 
     function openPack(uint256 n) external payable nonReentrant returns (uint256 id) {
-        if (paused() || block.timestamp < launchTime() || msg.value != quote(n)) revert InvalidValue();
+        if (block.timestamp < opensAt()) revert TooEarly();
+        if (paused() || msg.value != quote(n)) revert InvalidValue();
         sold += n;
         farm().register(msg.sender);
         farm().paidPackBought(msg.sender, n, msg.value);
@@ -124,7 +135,7 @@ contract PackSale is GameModule, ReentrancyGuard {
 
     function tokenPack(address p) external nonReentrant returns (uint256 id) {
         if (msg.sender != address(farm())) revert Unauthorized();
-        if (paused()) revert TooEarly();
+        if (paused() || block.timestamp < opensAt()) revert TooEarly();
         sold++;
         id = _commit(p, 1, false);
     }

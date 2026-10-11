@@ -40,7 +40,12 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         uint16[24] health;
         bool activePaid;
         uint256 drops;
+        uint64 paidXpDay;
+        uint256 paidXpToday;
     }
+
+    /// @notice Paid XP (packs and spending) per farm per UTC day. Activity XP is not capped.
+    uint256 public constant PAID_XP_PER_DAY = 400;
 
     mapping(address => mapping(uint256 => bytes32)) private dropSeeds;
     mapping(address => Farm) private farms;
@@ -52,7 +57,6 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
     event Placed(address indexed player, uint256 indexed id, uint256 room, uint256 slot);
     event Unplaced(address indexed player, uint256 indexed id, uint256 room, uint256 slot);
     event Spent(address indexed player, uint8 kind, uint256 paid, uint256 nominal);
-    event Merged(address indexed player, uint256 indexed result);
     event Scrapped(address indexed player, uint256 indexed id, uint256 earned);
     event Active(address indexed player, uint256 indexed epoch, uint256 gross, uint256 net);
 
@@ -126,7 +130,43 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         return farms[p].paid;
     }
 
+    /// @notice XP level, capped by farm age: level 5 needs 1 day, level 7 needs 3 days, level 10 needs 5 days.
     function level(address p) public view returns (uint256) {
+        uint256 lv = xpLevel(p);
+        uint256 cap = maxLevelByAge(p);
+        return lv < cap ? lv : cap;
+    }
+
+    function maxLevelByAge(address p) public view returns (uint256) {
+        uint256 born = farms[p].born;
+        uint256 age = born == 0 || block.timestamp < born ? 0 : block.timestamp - born;
+        if (age >= 5 days) return 10;
+        if (age >= 3 days) return 9;
+        if (age >= 1 days) return 6;
+        return 4;
+    }
+
+    /// @notice Paid XP still accepted today for this farm.
+    function paidXpRoom(address p) public view returns (uint256) {
+        Farm storage f = farms[p];
+        if (f.paidXpDay != block.timestamp / 1 days) return PAID_XP_PER_DAY;
+        return PAID_XP_PER_DAY - f.paidXpToday;
+    }
+
+    function _paidXp(address p, uint256 amount) private {
+        Farm storage f = farms[p];
+        uint64 today = uint64(block.timestamp / 1 days);
+        if (f.paidXpDay != today) {
+            f.paidXpDay = today;
+            f.paidXpToday = 0;
+        }
+        uint256 room = PAID_XP_PER_DAY - f.paidXpToday;
+        if (amount > room) amount = room;
+        f.paidXpToday += amount;
+        f.xp += amount;
+    }
+
+    function xpLevel(address p) public view returns (uint256) {
         uint256 x = farms[p].xp;
         if (x >= 2800) return 10;
         if (x >= 2400) return 9;
@@ -201,10 +241,15 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         if (msg.sender != packs()) revert Unauthorized();
         _prepare(p);
         farms[p].paid += n;
-        farms[p].xp += 25 * n;
+        _paidXp(p, 25 * n);
         _sync(p);
         rewards().recordSales(n);
         season().recordSpend(p, ethValue, true);
+    }
+
+    /// @notice Owner heartbeat: settle and re-commit the farm for the next IDLE_EPOCHS epochs.
+    function sync() external nonReentrant {
+        _prepare(msg.sender);
     }
 
     function setReferrer(address inviter) external nonReentrant {
@@ -292,7 +337,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         uint256 rate = market().quote(1 ether);
         if (rate == 0) revert NotConfigured();
         uint256 value = Math.mulDiv(paid, 1 ether, rate);
-        farms[p].xp += value * 2500 / 1 ether;
+        _paidXp(p, value * 2500 / 1 ether);
         season().recordSpend(p, value, kind == 0 || kind == 3 || kind == 4);
         emit Spent(p, kind, paid, nominal);
     }
@@ -341,7 +386,7 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         _charge(msg.sender, price, wallet, 3);
         farms[msg.sender].paid++;
         _sync(msg.sender);
-        farms[msg.sender].xp += 25;
+        _paidXp(msg.sender, 25);
         rewards().recordSales(1);
         id = ITokenPacks(packs()).tokenPack(msg.sender);
     }
@@ -350,29 +395,6 @@ contract FarmCore is GameModule, ReentrancyGuard, IERC1155Receiver {
         _prepare(msg.sender);
         uint256 paid = _charge(msg.sender, amount, wallet, 4);
         grid().tokenLobby(msg.sender, Math.mulDiv(paid, 1 ether, market().quote(1 ether)));
-    }
-
-    function merge(uint256[3] calldata ids, bool wallet) external nonReentrant returns (uint256 result) {
-        _prepare(msg.sender);
-        FarmItems.Item memory x = items().data(ids[0]);
-        if (x.rarity >= 3) revert InvalidValue();
-        for (uint256 i; i < 3; ++i) {
-            FarmItems.Item memory y = items().data(ids[i]);
-            if (
-                y.holder != msg.sender || y.equipped || _locked(msg.sender, ids[i]) || y.kind != x.kind
-                    || y.rarity != x.rarity || y.starter != x.starter
-            ) revert InvalidValue();
-            for (uint256 j; j < i; ++j) {
-                if (ids[i] == ids[j]) revert InvalidValue();
-            }
-        }
-        _charge(msg.sender, params().get(Params.Key.MergePrice) * (uint256(x.rarity) + 1), wallet, 5);
-        for (uint256 i; i < 3; ++i) {
-            items().destroy(ids[i]);
-        }
-        // Starter status follows a merge; its mining discount is account-wide below.
-        result = items().mint(msg.sender, x.kind, x.rarity + 1, false);
-        emit Merged(msg.sender, result);
     }
 
     function scrap(uint256 id, uint256 minimum) external nonReentrant {

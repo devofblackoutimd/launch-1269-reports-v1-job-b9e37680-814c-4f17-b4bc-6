@@ -87,7 +87,7 @@ contract EventsTest is BaseTest {
         vm.prank(alice);
         d.grid.lobbyETH{value: 1 ether}();
         assertLt(d.grid.lobbyWeight(district), before_);
-        assertEq(d.fees.credit(team), 0.13 ether);
+        assertEq(d.fees.credit(team), 0.1 ether);
         assertEq(d.fees.heartbeatBalance(), 0.02 ether);
         vm.warp(launch + 3 days);
         assertEq(d.grid.lobbyAmount(district), 0.5 ether);
@@ -198,6 +198,7 @@ contract EventsTest is BaseTest {
         uint256 price = d.packs.quote(112);
         vm.prank(alice);
         d.packs.openPack{value: price}(112);
+        veteran(alice);
         uint256 legend = place(alice, 0, 3, 0);
         uint256 mythic = place(alice, 1, 4, 1);
         calmNext();
