@@ -1,4 +1,4 @@
-# BLACKOUT v3.9/v3.10 — final ordered launch runbook
+# BLACKOUT v3.9/v3.10/v3.11 — final ordered launch runbook
 
 Source only. Nothing in this repository has been deployed, broadcast, bought, signed or minted, and this runbook
 authorizes none of it: every paid step below is a separate, requester-approved IMD job. It supersedes
@@ -6,7 +6,8 @@ authorizes none of it: every paid step below is a separate, requester-approved I
 X: https://x.com/IMDBlackout · Site: https://playblackout.xyz · Free pack: https://playblackout.xyz/freepack
 
 The game chain is **Robinhood Chain (4663)**, called "mainnet" below. The oracle schedules are bought on
-**Ethereum (1)**. The rehearsal runs the same sequence on **Sepolia (11155111)** first.
+**Ethereum (1)**. The rehearsal (v3.11) runs the same sequence on a **local anvil fork of 4663** against the real
+platform contracts, impersonating the platform deployer; nothing is broadcast.
 
 ## 0. Rules for every step
 
@@ -40,23 +41,55 @@ The game chain is **Robinhood Chain (4663)**, called "mainnet" below. The oracle
 | Optional Robinhood IMD donation to the Desk for backups | Requester / anyone | any amount; no withdrawal exists |
 | Platform addresses on 4663 | Fixed (research job b94e6839) | ProjectFactory `0x9c9d2fcb75c2c132c0ac0c42df3819a42347265e`, its launch registry `0xf52bbe066b7ad2d28c2195d066ea08dcbca88406`, LaunchFactory `0xa25b02a1e93903b790e6aaf7da1b8b8d50294645` |
 | Oracle on 4663 | Fixed (oracle reference) | Intake v2 `0xa43e6f75ee006411f79ac1c84120606c2330de82`, IntakeDelivery `0xce0e6a670aa75e161d02aca3c7f00b94ca428ccb`, attester `0x5598aa9146215bc13eb26f2c692ad1461fd32982`, Robinhood IMD `0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127`, action `bytes32("oracle.request@oracle-1")` |
-| Sepolia platform addresses (ProjectFactory, its registry, LaunchFactory, PoolManager) | **Read at rehearsal time** from the platform docs / `GET /launches/:id`; verify with `cast code` | not in this repo; never reuse the 4663 literals on Sepolia unless `cast code` proves them |
-| Sepolia oracle | Fixed (oracle reference) | same Intake/IntakeDelivery addresses, TestIMD `0x44a1cd38474fb1748400e7deb5f8d786cce3f89a` (open `mint`) as asset |
-| Sepolia game configuration | Rehearsal operator | throw-away test roots and snapshot (never the production ones, so M-2 stays closed) |
+| PoolManager on 4663 | Fixed (`LaunchFactory.poolManager()`, confirmed on the fork) | `0x8366a39CC670B4001A1121B8F6A443A643e40951` |
+| Platform deployer (the only wallet the factories take a launch from) | Fixed (`ProjectFactory.deployer()` = `LaunchFactory.deployer()`) | `0xcECc29B037f5064fCdF45a5C318F132ef76aA551` |
+| Rehearsal RPC for the 4663 fork | Rehearsal operator | any 4663 JSON-RPC (public ones that answered on 2026-10-12: `https://robinhood.drpc.org`, `https://robinhood-rpc.publicnode.com`) |
+| Rehearsal game configuration | Rehearsal operator | throw-away test roots, snapshot and attester key (never the production ones, so M-2 stays closed) |
 
-## 2. Sepolia rehearsal (11155111)
+## 2. Fork rehearsal (local anvil fork of 4663) — run in v3.11, passed
 
-Run steps M1–M14 below on Sepolia with the Sepolia addresses and the test roots, `chainId 11155111` in every
-launch, asset TestIMD in the Desk's oracle config, and the schedules' `consumer.chainId` set to `11155111`.
-Record from the rehearsal, and compare with the local values before mainnet:
+`tools/rehearse_v311.sh <4663 rpc>` starts `anvil --fork-url`, builds with the IMD launch toolchain and runs
+`test/fork/RehearsalV311.t.sol` against the fork. The test executes M1–M13 in order through the **real**
+ProjectFactory `0x9c9d…265e`, its registry `0xf52b…8406`, LaunchFactory `0xa25b…4645` and PoolManager
+`0x8366…0951`, impersonating the platform deployer where the platform deploys or initializes, with the real
+Intake/IntakeDelivery/IMD addresses in the Desk's oracle config, a test attester key, throw-away roots and
+throw-away launch numbers 777001–777005 (asserted unrecorded first). Nothing is broadcast. The committed log is
+`artifacts/v311/rehearsal.log` (every address, call and check); the result is summarised in `report.md`.
 
-1. the attested creation-code hash of every contract against `SwarmCode`/`ModuleCode` launch pins;
-2. the hook's `afterInitialize` sender (must equal the LaunchFactory) and `V4Market.initializedAt() != 0`;
-3. gas of each launch receipt against the platform's per-launch ceiling;
-4. that `Desk.bind`, `bindFeeRouter`, `forward`, `fundEndowment` and one relayed `submit` succeed in that order;
-5. that `LaunchFactory.claimFees(tokenLaunch)` pays the paying wallet.
+What the fork proved (2026-10-12, fork block 86865884, basefee 0.0206 gwei; see the log for the exact figures):
 
-Only when all five hold, start mainnet.
+1. **Creation-code hashes.** Every contract the real factory deployed from the launch-toolchain build hashes to
+   the pins: `SwarmCode.REGISTRY_LAUNCH`, `SwarmCode.PARAMS_LAUNCH`, `ModuleCode.launchHash(0..13)`. The
+   CREATE2 addresses equal `predictContract`, so `register`, `bind`, `bindFeeRouter` and `forward` all pass
+   their proofs. The attestation hashes the plane records must equal these same values.
+2. **`afterInitialize` sender = LaunchFactory.** The trace shows `PoolManager.initialize` called by the
+   LaunchFactory inside its launch transaction and `V4Market.afterInitialize(sender = 0xa25b…4645, …)`;
+   `initializedAt()` is set. The `$factory` constructor word is correct.
+3. **Gas per launch vs the 0.01 ETH ceiling** (gas used by the factory call, cost at the fork basefee):
+   Desk 5,415,993; Escrow 1,743,701; token + hook 7,220,053; job A (8 contracts) 21,411,808; job B (8 contracts)
+   19,523,888. At the fork basefee the dearest launch costs about 0.00045 ETH; the largest launch fits under the
+   ceiling up to a basefee of about 0.47 gwei, more than 20× the fork's basefee.
+4. **Constructor encoding through the real launcher.** The twelve-word SwarmDesk encoding
+   (`tools/swarm_constructor_args.mjs` / `SwarmArgs.encode`), the three-word escrow, the eight-word hook with
+   `$poolManager`, `$token`, `$factory` and the job A/B words all decoded as intended (every check view agrees).
+5. **Order and checks.** `Desk.bind` → `register` 0–5 → job B + `register` 6–13 → `bindFeeRouter` → `forward`
+   (full balance to the authenticated RewardPool) → `fundEndowment` (drip starts, 42 days) → relayed `submit`
+   of an attested answer (plan severity clamped into 5000–7000) → keeper `advanceEpoch` with entropy reveal →
+   `LaunchFactory.claimFees` pays the paying wallet (0.0198 ETH on a 2 ETH buy ≈ 1%). Buys at +5/+15/+25 min
+   paid 90/50/25% to rewards; at +31 min exactly 1%; a net sell carried the surcharge; the first pack bought at
+   +1h and its entropy was captured; before +1h `openPack` reverts `TooEarly`.
+
+Where reality differed from the v3.10 runbook (all folded into §3 below, no contract change):
+
+- **Pair currency.** The LaunchFactory `launch` tuple carries the pair currency explicitly. The three recorded
+  4663 hook launches (1015, 1300, 1316) were all **IMD-paired**; BLACKOUT's `pairWith eth` must put the zero
+  address there, so the pool is `(ETH, token)` as `V4Market.key()` expects. With IMD the hook's `afterInitialize`
+  reverts `Unauthorized` on the key check and the launch fails (observed on the fork before the fix).
+- **remainderTo gets the 20% plus the liquidity dust.** The factory sends `remainderTo` everything the pool
+  position did not consume, so the escrow holds ≥ 200,000,000e18 (the fork: +560,364 tokens from the
+  rehearsal's own liquidity figure). `forward` moves the whole balance; `fundEndowment` needs ≥ principal. OK.
+- **First `advanceEpoch` before packs open.** Pack sales record into the live epoch, so the keeper's first
+  `advanceEpoch` (allowed from pool initialization on) must land before +1h or `openPack` reverts `TooEarly`.
 
 ## 3. Mainnet (Robinhood Chain 4663), in order
 
@@ -98,7 +131,8 @@ Objective:
 
 > BLACKOUT token launch on Robinhood Chain (4663): onchain univ4_hook, pairWith eth, platform pool fee 12500 (1.25%: 1% to the paying wallet via LaunchFactory.claimFees, 0.25% to the IMD network), economics poolBps 7000 and remainderTo <ESCROW> (the BLACKOUT EndowmentEscrow; the 20% endowment reaches the game RewardPool only through it). Hook: `V4Market` from the accepted BLACKOUT v3.10 commit (solc 0.8.26, optimizer 200, cancun, viaIR false, bytecode_hash none), constructor ($poolManager, $token, 12500, 60, $factory, 0x9c9d2fcb75c2c132c0ac0c42df3819a42347265e, <DESK>, <GAME_CONFIG_HASH>). The hook has no owner; after the stepped 30-minute launch tax it adds exactly 1% to game rewards on every swap plus the progressive sell surcharge. Paying wallet 0x6d51cBE774aeAe4dd40bCA2560E9bc2695A0d007. Record the token, hook and launch number. https://x.com/IMDBlackout · https://playblackout.xyz
 
-Check: `cast call <TOKEN> "balanceOf(address)(uint256)" <ESCROW>` = remainder (200,000,000e18 for 70/20/10);
+Check: `cast call <TOKEN> "balanceOf(address)(uint256)" <ESCROW>` ≥ 200,000,000e18 (the 20% plus any pool
+dust the factory did not seed; the fork showed +0.056%); the pool key is `(ETH 0x0, TOKEN, 12500, 60, HOOK)`;
 `<HOOK>.launcher()` = LaunchFactory, `poolFee()` = 12500, `desk()` = `<DESK>`, `gameConfigHash()` =
 `<GAME_CONFIG_HASH>`, `initializedAt()` ≠ 0; record `<TOKEN>`, `<HOOK>`, `<N_T>`.
 
@@ -172,20 +206,22 @@ Check: `GET /schedules/<id>` shows status active and the runs; after the first r
 `GET /oracle/requests/<run>/attestation` has `verifyingContract` = `<DESK>`, chainId 4663 and the pinned
 question hash. Put the ids in `SCHEDULE_EVENT` / `SCHEDULE_REGULATOR`. Cost: 14.5 IMD/week at 0.5 IMD per run.
 
-### M12. Keeper start (requester's `<KEEPER_WALLET>`)
+### M12. Keeper start (requester's `<KEEPER_WALLET>`) — within the first hour after M3
 
-Fill `/etc/blackout/keeper.env` from `keeper/keeper.env.example` (RPC, `REGISTRY`, `KEEPER_KEY`,
+The first `FarmRewards.advanceEpoch()` is allowed from the pool initialization on and **must land before
+packs open at launch + 1h**: pack sales record into the live epoch and revert `TooEarly` until epoch 1 exists
+(fork rehearsal). Fill `/etc/blackout/keeper.env` from `keeper/keeper.env.example` (RPC, `REGISTRY`, `KEEPER_KEY`,
 `SCHEDULE_EVENT`, `SCHEDULE_REGULATOR`, `LAUNCH_FACTORY`, `TOKEN_LAUNCH=<N_T>`), fund the wallet with gas
 ETH, `systemctl enable --now blackout-keeper`.
 Check: `node keeper/keeper.mjs status` shows the registry, the next epoch, the schedules; after the first
 schedule run `SwarmDesk.lastAnswer(0)` shows the relayed answer and the next GridOperator plan is set; the
-first `advanceEpoch` lands at `FarmRewards.epochEnd()`.
+following `advanceEpoch` calls land at `FarmRewards.epochEnd()`.
 
 ### M13. LaunchFactory.claimFees (permissionless, recurring)
 
 `LaunchFactory.claimFees(<N_T>)` (keeper every 6 h, or `--step claim-fees`).
-Check: the paying wallet's ETH increases by about 1% of swap volume since the last claim; the IMD network
-receives 0.25%.
+Check: the paying wallet's ETH increases by about 1% of swap volume since the last claim (fork: 0.0198 ETH after
+a 2 ETH buy); the IMD network receives 0.25%.
 
 ## 4. What is never paused or owned
 

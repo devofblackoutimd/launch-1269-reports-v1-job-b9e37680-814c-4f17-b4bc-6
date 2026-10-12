@@ -1,4 +1,4 @@
-# BLACKOUT v3.9 / v3.10 report
+# BLACKOUT v3.9 / v3.10 / v3.11 report
 
 Source only. No deployment, broadcast, oracle purchase, schedule, token action or mint. v3.10 finishes v3.9
 (job 14aa1d96). **No contract source changed in v3.10**: every module, Registry, Params, SwarmDesk,
@@ -28,7 +28,7 @@ X: https://x.com/IMDBlackout · https://playblackout.xyz · https://playblackout
   bodies with `consumer {4663, Desk}` and no `deliver`. `test/oracle-v310.test.mjs` covers it.
 - **Regression tests.** `test/V310.t.sol` checks that the build's own 14 modules plus Registry and Params match
   one toolchain's pins together. `testTwinWithForeignTokenCannotDrainEscrow` covers the bounded part of M-2.
-- **Docs.** [launch-v39.md](launch-v39.md) is the final ordered runbook (Sepolia rehearsal, then 4663) with
+- **Docs.** [launch-v39.md](launch-v39.md) is the final ordered runbook (fork rehearsal since v3.11, then 4663) with
   objective texts, inputs and on-chain checks per step. [docs/review-v39-independent.md](docs/review-v39-independent.md)
   is the review.
 
@@ -42,6 +42,7 @@ X: https://x.com/IMDBlackout · https://playblackout.xyz · https://playblackout
 | Pins (`tools/pin_module_code.py --check`, `tools/pin_swarm_code.py --check`) | All 14 modules plus Registry/Params match; every runtime ≤ 24,576 | same |
 | Flattened `launch/V4Market.sol` | Byte-identical to `src/V4Market.sol` and embeds `REGISTRY_LAUNCH` | n/a |
 | Node: `oracle-v37`, `keeper-v39`, `oracle-v310` | Pass | — |
+| v3.11 fork rehearsal `test/fork/RehearsalV311.t.sol` (needs a 4663 fork; skips offline) | 5 passed on the anvil fork (`artifacts/v311/rehearsal.log`) | compiles; skips offline |
 
 Logs are in `artifacts/v310/`. The repository toolchain's full run was not repeated after the last test edits
 because of its ten-minute compile; the edited suites were re-run on it.
@@ -69,6 +70,52 @@ The second-contributor review of v3.8 → v3.9 is in [docs/review-v39-independen
 
 Fees, severity floor, escrow refactor, Desk constructor packing and keeper relay/wiring had no findings.
 
+## v3.11 fork rehearsal (this job)
+
+Source only; nothing deployed or broadcast; no contract logic changed (the rehearsal found no bug in the
+contracts). `tools/rehearse_v311.sh <4663 rpc>` starts a local anvil fork of Robinhood Chain, builds with the IMD
+launch toolchain (`FOUNDRY_VIA_IR=false FOUNDRY_BYTECODE_HASH=none`) and runs `test/fork/RehearsalV311.t.sol`,
+which executes runbook steps M1–M13 in order through the **real** ProjectFactory, its registry, LaunchFactory,
+PoolManager, Intake and IntakeDelivery addresses, impersonating the platform deployer `0xcECc…a551` where the
+platform deploys or initializes. Throw-away roots, a test attester key and launch numbers 777001–777005 (asserted
+unrecorded) were used; the test skips on any chain other than 4663, so the offline suite is unchanged. The log
+with every address, call and check is `artifacts/v311/rehearsal.log` (5 passed, 0 failed, fork block 86865884,
+2026-10-12). The factory ABIs were recovered from the runtime selectors and the calldata of recorded launches
+1015, 1271, 1300 and 1316; the factory sources remain unverified.
+
+| Check (brief §2) | Result on the fork |
+|---|---|
+| `Desk.registry()` = job A registry after `bind`; wrong coordinates and a non-registry refused; second bind refused | passed |
+| `register` 0–13: factory CREATE2 addresses equal `predictContract`; duplicate role refused | passed, 14 registered |
+| `bindFeeRouter`: non-router refused; `fees()`/`params()` set; `flushFees` no longer `NotConfigured` | passed |
+| `escrow.forward`: wrong pool index refused; full balance (200,560,364e18) to the authenticated RewardPool; second call refused | passed |
+| `fundEndowment` starts the drip (42 days); second call refused | passed |
+| First pack only after launch + 1h (`TooEarly` before); entropy captured via the ArbSys clock | passed |
+| Buys at +5/+15/+25 min pay 90/50/25% to rewards; +31 min exactly 1%; net sell carries the surcharge (cap 15%); `flushFees` lands in the FeeRouter | passed |
+| Attested answer relayed by an arbitrary wallet via `SwarmDesk.submit`; forged signature refused; replay ignored; plan severity clamped to 7000 (band 5000–7000) for epochs e+1, e+2 | passed |
+| Keeper `advanceEpoch` at `epochEnd` resolves the event with revealed entropy (seed ≠ 0), epoch 2 starts | passed |
+| `LaunchFactory.claimFees(N_T)` pays the paying wallet: 0.0198 ETH after a 2 ETH buy (≈ 1%) | passed |
+
+The four items v3.10 marked unproven:
+
+| Item | Fork result |
+|---|---|
+| Attested creation-code hashes vs the real factory | Every deployed contract's initcode prefix hashes to the launch pins (`SwarmCode.*_LAUNCH`, `ModuleCode.launchHash(0..13)`), and the factory's CREATE2 addresses match `predictContract`, so the Desk, hook, Registry and escrow proofs all pass against the real factory. |
+| `afterInitialize` sender | **LaunchFactory `0xa25b…4645`** (trace: `PoolManager.initialize` inside the LaunchFactory's launch tx, hook called with that sender). `initializedAt` set. |
+| Gas per launch vs the 0.01 ETH ceiling | Desk 5,415,993; Escrow 1,743,701; token + hook 7,220,053; job A 21,411,808; job B 19,523,888 gas. At the fork basefee (0.0206 gwei) the dearest launch costs about 0.00045 ETH; it fits under the ceiling up to ≈ 0.47 gwei. |
+| Constructor encoding through the real launcher | Twelve-word Desk, three-word escrow, eight-word hook (`$poolManager`, `$token`, `$factory`), job A/B words: all decoded as intended. |
+
+Where reality differed (folded into `launch-v39.md`, no code change): the LaunchFactory's launch tuple names the
+pair currency explicitly and every recorded 4663 hook launch so far was IMD-paired, so BLACKOUT's ETH pairing
+must carry the zero address there (with IMD the hook's key check reverts the launch, as first observed on the
+fork); `remainderTo` receives the 20% plus whatever pool dust the position did not seed (≥ 200,000,000e18, as
+the runbook's checks already allow); and the keeper's first `advanceEpoch` must land before packs open at +1h.
+
+The Sepolia rehearsal of v3.10 is replaced by this fork rehearsal: the same checks ran against the real 4663
+platform contracts and bytecode, without spending IMD on Sepolia launches. What a fork cannot prove: the plane's
+admission (audit panel, manifest, stand-in checks), the plane's own liquidity/price figures for the ETH pair,
+live oracle schedules and the real attester, and the gas price on launch day.
+
 ## Still open
 
 1. **M-2 twin front-run.** It cannot be closed without an on-chain fact only the honest launch has. Mitigation:
@@ -77,8 +124,10 @@ Fees, severity floor, escrow refactor, Desk constructor packing and keeper relay
    they must decide the anchor (for example a factory record of the payer). That changes the Desk pin.
 2. **Requester inputs:** snapshot block, the two Merkle roots, the keeper wallet and its RPC, the Ethereum IMD
    for the schedules, and the Sepolia platform addresses (read and verified at rehearsal time).
-3. **Sepolia rehearsal** (runbook §2): not run. Attested creation-code hashes, the `afterInitialize` sender, gas
-   per launch, the relay and `claimFees` are unproven on a live chain.
+3. **Fork rehearsal done, live platform path not.** The fork proved the creation-code pins, the `afterInitialize`
+   sender, gas per launch, the relay and `claimFees` against the real 4663 contracts (above). Still unproven: the
+   plane's admission and manifest checks, its liquidity/price figures for the ETH pair, the live attester and
+   schedules, and launch-day gas.
 4. Slither/Mythril and live oracle schedules were not run. This is not an external audit.
 
 ## Responsibilities
