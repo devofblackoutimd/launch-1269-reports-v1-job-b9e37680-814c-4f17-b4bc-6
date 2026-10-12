@@ -20,8 +20,9 @@ function hash(value,name) {
 export function swarmConstructorArgs(o,b) {
   const chain=uint(o.questionChain,64,'questionChain',1n),from=uint(o.fromBlock,64,'fromBlock'),to=uint(o.toBlock,64,'toBlock');
   if(to<from)throw Error('Reversed context window');
-  const rl=uint(b.registryLaunch,64,'registryLaunch',1n),ri=uint(b.registryIndex,3,'registryIndex');
-  const pl=uint(b.paramsLaunch,64,'paramsLaunch',1n),pi=uint(b.paramsIndex,3,'paramsIndex');
+  const rl=uint(b.registryLaunch??0,64,'registryLaunch'),ri=uint(b.registryIndex??0,3,'registryIndex');
+  const pl=uint(b.paramsLaunch??0,64,'paramsLaunch'),pi=uint(b.paramsIndex??0,3,'paramsIndex');
+  if(rl!==0n||ri!==0n||pl!==0n||pi!==0n)throw Error('v3.8: launch coordinates are proven at bind time, not in the constructor');
   const bps=uint(b.heartbeatBps,16,'heartbeatBps');
   if(bps<200n||bps>5000n||BigInt(b.heartbeatCap)!==10n**18n)throw Error('Invalid heartbeat configuration');
   if(o.intake.toLowerCase()===o.delivery.toLowerCase())throw Error('Duplicate callback endpoints');

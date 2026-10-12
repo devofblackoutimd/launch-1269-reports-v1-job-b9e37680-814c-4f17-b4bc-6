@@ -14,6 +14,7 @@ import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockGameRegistry} from "./mocks/MockGameRegistry.sol";
 import {SwarmDesk} from "../src/SwarmDesk.sol";
 import {Params} from "../src/Params.sol";
+import {V4Market} from "../src/V4Market.sol";
 import {GridOperator} from "../src/GridOperator.sol";
 import "../src/lib/Errors.sol";
 
@@ -173,18 +174,16 @@ abstract contract BaseTest is Test {
         }
     }
 
+    /// @dev v3.8: the frozen game configuration only (no token, Params or launch coordinates).
     function bindingConfigHash() internal view returns (bytes32) {
         return keccak256(
-            abi.encode(
-                address(d.params),
-                keccak256(abi.encode(uint256(17), alice)),
-                freePackRoot(),
-                uint256(23_000_000),
-                uint256(0),
-                uint64(7),
-                uint256(1)
-            )
+            abi.encode(keccak256(abi.encode(uint256(17), alice)), freePackRoot(), uint256(23_000_000), uint256(0))
         );
+    }
+
+    /// @dev Fixture coordinates: the hook registry sits at (7,1) in the local factory.
+    function bindHook(V4Market hook_, address router) internal {
+        hook_.bindFeeRouter(router, 7, 1);
     }
 
     function canonicalFees(address hook_) internal returns (FeeRouter f) {

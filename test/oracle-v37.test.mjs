@@ -8,7 +8,7 @@ const vectors=JSON.parse(readFileSync('test/fixtures/oracle-hash-vectors.json','
 for(const v of vectors)assert.equal(oracleQuestionHash(v.body),v.questionHash);
 const config=JSON.parse(readFileSync('docs/oracle-v37/oracle-config.json','utf8'));
 // Local encoder fixtures only: never a production launch configuration.
-const binding={factory:'0x1234567890123456789012345678901234567890',registryLaunch:'812',registryIndex:1,paramsLaunch:'812',paramsIndex:0,heartbeatBps:200,heartbeatCap:'1000000000000000000',gameConfigHash:keccak256(utf8('fixture'))};
+const binding={factory:'0x1234567890123456789012345678901234567890',registryLaunch:'0',registryIndex:0,paramsLaunch:'0',paramsIndex:0,heartbeatBps:200,heartbeatCap:'1000000000000000000',gameConfigHash:keccak256(utf8('fixture'))};
 const constructorArgs=swarmConstructorArgs(config,binding);
 assert.equal(constructorArgs.length,14);assert.equal(constructorArgs.map(word).join('').length,14*64);
 const context=BigInt(constructorArgs[6]),bind=BigInt(constructorArgs[12]),mask=(1n<<64n)-1n;

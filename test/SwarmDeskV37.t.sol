@@ -323,7 +323,7 @@ contract SwarmDeskV37Test is BaseTest {
         (ok,) = address(desk).call(abi.encodeWithSignature("execute(address,bytes)", address(d.params), bytes("")));
         assertFalse(ok);
         vm.expectRevert(AlreadyDone.selector);
-        desk.bind(address(d.registry), "", "");
+        desk.bind(address(d.registry), "", "", 1, 1, 1, 0);
     }
 
     function testNextSlotAcceptsSameQuestionAndChangedExecutionBytesReject() public {
@@ -375,11 +375,24 @@ contract SwarmDeskV37Test is BaseTest {
     function testEmptyChainConstructorAndAuthenticatedBindingRejectSpoofs() public {
         LocalApplicationFactory f = new LocalApplicationFactory();
         SwarmDesk.BindingConfig memory b = desk.bindingConfig();
+        assertEq(b.registryLaunch, 1);
+        assertEq(b.paramsLaunch, 1);
         b.factory = address(f);
+        // Bound coordinates are recorded on chain, never accepted by the constructor.
+        bytes memory stale = SwarmArgs.encode(desk.oracleConfig(), b);
+        vm.expectRevert(InvalidValue.selector);
+        f.deploy(4, 0, bytes.concat(vm.getCode("SwarmDesk.sol:SwarmDesk"), stale));
+        b.registryLaunch = 0;
+        b.registryIndex = 0;
+        b.paramsLaunch = 0;
+        b.paramsIndex = 0;
         SwarmDesk fresh = SwarmDesk(deployCode("SwarmDesk.sol:SwarmDesk", SwarmArgs.encode(desk.oracleConfig(), b)));
         assertEq(keccak256(abi.encode(fresh.oracleConfig())), keccak256(abi.encode(desk.oracleConfig())));
         assertEq(keccak256(abi.encode(fresh.bindingConfig())), keccak256(abi.encode(b)));
         assertEq(address(fresh.registry()), address(0));
+        OracleAttestation.Attestation memory unbound = attestation(0, eventValues());
+        vm.expectRevert(NotConfigured.selector);
+        fresh.submit(unbound, "");
         bytes memory pCode = type(Params).creationCode;
         bytes memory rCode = type(GameRegistry).creationCode;
         Params p =
@@ -396,11 +409,11 @@ contract SwarmDeskV37Test is BaseTest {
         );
         GameRegistry r = GameRegistry(f.deploy(1, 1, bytes.concat(rCode, args)));
         vm.expectRevert(InvalidProof.selector);
-        fresh.bind(address(r), hex"ff", pCode);
+        fresh.bind(address(r), hex"ff", pCode, 1, 1, 1, 0);
         vm.expectRevert(InvalidProof.selector);
-        fresh.bind(address(r), rCode, hex"ff");
+        fresh.bind(address(r), rCode, hex"ff", 1, 1, 1, 0);
         vm.expectRevert(InvalidProof.selector);
-        fresh.bind(address(d.registry), rCode, pCode);
+        fresh.bind(address(d.registry), rCode, pCode, 1, 1, 1, 0);
         GameRegistry spoof = new GameRegistry(
             address(token),
             address(p),
@@ -412,7 +425,7 @@ contract SwarmDeskV37Test is BaseTest {
             address(f)
         );
         vm.expectRevert(InvalidProof.selector);
-        fresh.bind(address(spoof), rCode, pCode);
+        fresh.bind(address(spoof), rCode, pCode, 1, 1, 1, 0);
         GameRegistry wrongRoot = new GameRegistry(
             address(token),
             address(p),
@@ -424,12 +437,21 @@ contract SwarmDeskV37Test is BaseTest {
             address(f)
         );
         vm.expectRevert(InvalidProof.selector);
-        fresh.bind(address(wrongRoot), rCode, pCode);
+        fresh.bind(address(wrongRoot), rCode, pCode, 1, 1, 1, 0);
+        // Correct proof at the wrong coordinates fails; zero coordinates are refused outright.
+        vm.expectRevert(InvalidProof.selector);
+        fresh.bind(address(r), rCode, pCode, 2, 1, 1, 0);
+        vm.expectRevert(InvalidProof.selector);
+        fresh.bind(address(r), rCode, pCode, 1, 1, 1, 1);
+        vm.expectRevert(InvalidValue.selector);
+        fresh.bind(address(r), rCode, pCode, 0, 1, 1, 0);
         vm.prank(bob);
-        fresh.bind(address(r), rCode, pCode);
+        fresh.bind(address(r), rCode, pCode, 1, 1, 1, 0);
         assertEq(address(fresh.registry()), address(r));
+        assertEq(fresh.bindingConfig().registryLaunch, 1);
+        assertEq(fresh.bindingConfig().paramsIndex, 0);
         vm.expectRevert(AlreadyDone.selector);
-        fresh.bind(address(r), rCode, pCode);
+        fresh.bind(address(r), rCode, pCode, 1, 1, 1, 0);
         vm.expectRevert(AlreadyDone.selector);
         f.deploy(1, 1, bytes.concat(rCode, abi.encode("different initcode")));
     }
@@ -437,6 +459,10 @@ contract SwarmDeskV37Test is BaseTest {
     function testFlatConstructorRejectsUnusedPackedBits() public {
         SwarmDesk.OracleConfig memory o = desk.oracleConfig();
         SwarmDesk.BindingConfig memory b = desk.bindingConfig();
+        b.registryLaunch = 0;
+        b.registryIndex = 0;
+        b.paramsLaunch = 0;
+        b.paramsIndex = 0;
         bytes memory args = SwarmArgs.encode(o, b);
         assertEq(args.length, 14 * 32);
         bytes memory code = vm.getCode("SwarmDesk.sol:SwarmDesk");
@@ -450,6 +476,88 @@ contract SwarmDeskV37Test is BaseTest {
         assembly ("memory-safe") { mstore(add(args, 416), badBinding) }
         vm.expectRevert(InvalidValue.selector);
         f.deploy(5, 0, bytes.concat(code, args));
+    }
+
+    /// @dev v3.8 relay: schedules cannot deliver cross-chain, so anyone relays the HTTP attestation.
+    function testSubmitRelayAcceptsAttestedAnswerFromAnyoneOnce() public {
+        OracleAttestation.Attestation memory a = attestation(0, eventValues());
+        bytes memory sig = signature(a);
+        vm.prank(bob);
+        desk.submit(a, sig);
+        assertTrue(desk.consumed(a.requestId));
+        (bytes32 answerHash,,,,, bool pending_,) = desk.lastAnswer(0);
+        assertEq(answerHash, keccak256(a.answer));
+        assertTrue(pending_);
+        // Replay of the same UUID, from a relayer or the delivery transport, is ignored.
+        vm.prank(alice);
+        desk.submit(a, sig);
+        vm.prank(address(delivery));
+        desk.onOracleResult(keccak256("transport"), a, sig);
+        // A second answer for the same slot is ignored even with a fresh UUID.
+        bytes32[] memory v = eventValues();
+        v[3] = bytes32(uint256(6000));
+        OracleAttestation.Attestation memory b = attestation(0, v);
+        desk.submit(b, signature(b));
+        assertFalse(desk.consumed(b.requestId));
+        desk.execute(0, a.answer);
+        assertEq(d.grid.planAt(2).severity, 7000);
+    }
+
+    function testSubmitRelayRejectsForgedWrongQuestionStaleAndMalformed() public {
+        OracleAttestation.Attestation memory a = attestation(0, eventValues());
+        bytes memory sig = signature(a);
+        // Wrong signer.
+        (uint8 v_, bytes32 r_, bytes32 s_) = vm.sign(0x999, desk.attestationDigest(a));
+        vm.expectRevert();
+        desk.submit(a, abi.encodePacked(r_, s_, v_));
+        // Tampered answer after signing.
+        OracleAttestation.Attestation memory t = attestation(0, eventValues());
+        bytes memory tsig = signature(t);
+        bytes32[] memory tv = eventValues();
+        tv[3] = bytes32(uint256(9000));
+        t.answer = abi.encode(tv);
+        vm.expectRevert();
+        desk.submit(t, tsig);
+        // Unknown question hash.
+        OracleAttestation.Attestation memory q = attestation(0, eventValues());
+        q.questionHash = keccak256("other question");
+        bytes memory qsig = signature(q);
+        vm.expectRevert(InvalidProof.selector);
+        desk.submit(q, qsig);
+        // Wrong context window and too small a panel.
+        OracleAttestation.Attestation memory w = attestation(0, eventValues());
+        w.toBlock = 201;
+        bytes memory wsig = signature(w);
+        vm.expectRevert(InvalidValue.selector);
+        desk.submit(w, wsig);
+        OracleAttestation.Attestation memory pnl = attestation(0, eventValues());
+        pnl.agreed = 3;
+        bytes memory psig = signature(pnl);
+        vm.expectRevert(InvalidValue.selector);
+        desk.submit(pnl, psig);
+        // Stale: issued in a previous slot is ignored, not accepted.
+        OracleAttestation.Attestation memory old = attestation(0, eventValues());
+        old.issuedAt = uint64(block.timestamp - 7 hours);
+        desk.submit(old, signature(old));
+        assertFalse(desk.consumed(old.requestId));
+        // Wrong epoch in the answer is ignored.
+        bytes32[] memory ev = eventValues();
+        ev[1] = bytes32(uint256(d.rewards.epoch() + 5));
+        OracleAttestation.Attestation memory e = attestation(0, ev);
+        desk.submit(e, signature(e));
+        assertFalse(desk.consumed(e.requestId));
+        // Severity above the band clamps to 7000; below clamps to 5000.
+        bytes32[] memory hv = eventValues();
+        hv[3] = bytes32(uint256(9000));
+        OracleAttestation.Attestation memory h = attestation(0, hv);
+        desk.submit(h, signature(h));
+        assertTrue(desk.consumed(h.requestId));
+        desk.execute(0, h.answer);
+        assertEq(d.grid.planAt(2).severity, desk.SEVERITY_MAX());
+        assertEq(desk.SEVERITY_MIN(), 5000);
+        // The valid original is now refused for the slot (already accepted); nothing changes.
+        desk.submit(a, sig);
+        assertFalse(desk.consumed(a.requestId));
     }
 
     function testFuzzEveryParamHardBoundsAndTenPercentStep(uint8 rawKey, uint248 target) public {

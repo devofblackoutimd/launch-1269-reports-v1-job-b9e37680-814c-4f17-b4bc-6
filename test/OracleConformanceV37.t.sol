@@ -82,7 +82,7 @@ contract OracleConformanceV37Test is Test {
         o.questions = [vector().questionHash, keccak256("regulator")];
         o.bodies = [keccak256("event body"), keccak256("regulator body")];
         SwarmDesk.BindingConfig memory b =
-            SwarmDesk.BindingConfig(makeAddr("factory"), 1, 1, 1, 0, keccak256("config"), 200, 1 ether);
+            SwarmDesk.BindingConfig(makeAddr("factory"), 0, 0, 0, 0, keccak256("config"), 200, 1 ether);
         deployCodeTo("OracleConformanceV37.t.sol:SwarmVectorHarness", abi.encode(o, b), VECTOR_CONSUMER);
         consumer = SwarmVectorHarness(VECTOR_CONSUMER);
     }

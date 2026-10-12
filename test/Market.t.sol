@@ -16,10 +16,12 @@ contract MarketTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("network recipient");
-        hook = new TestV4Market(address(manager), address(token), network, address(bindingFactory), bindingConfigHash());
+        hook = new TestV4Market(
+            address(manager), address(token), network, address(bindingFactory), address(desk), bindingConfigHash()
+        );
         d.fees = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(d.fees), 7, 1);
+        bindHook(hook, address(d.fees));
         vm.deal(address(manager), 10000 ether);
         token.transfer(address(manager), 10000 ether);
         manager.initializeHook(hook);
@@ -92,10 +94,11 @@ contract MarketTest is BaseTest {
             address(manager),
             address(token),
             network,
-            0,
+            12500,
             60,
             address(this),
             address(bindingFactory),
+            address(desk),
             bindingConfigHash()
         );
     }

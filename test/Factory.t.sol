@@ -15,6 +15,7 @@ contract FactoryTest is BaseTest {
             60,
             address(this),
             address(bindingFactory),
+            address(desk),
             bindingConfigHash()
         );
         (bytes32 salt, address predicted) = factory.findSalt(c, 0, 100000);

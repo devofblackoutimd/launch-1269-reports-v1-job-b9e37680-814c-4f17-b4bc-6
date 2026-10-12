@@ -91,6 +91,9 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
         uint64 deadline;
         uint8 streamPlusOne;
     }
+    /// @dev Attested severity band; GridOperator itself admits 5000-10000, so the Desk never exceeds 7000.
+    uint16 public constant SEVERITY_MIN = 5000;
+    uint16 public constant SEVERITY_MAX = 7000;
     OracleConfig private config;
     BindingConfig private binding;
     IGameRegistry public registry;
@@ -113,8 +116,10 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
 
     /// @dev Fourteen static ABI words fit the launcher's flat constructor encoder.
     /// contextWord = chainId[0:64] | fromBlock[64:128] | toBlock[128:192].
-    /// bindingWord = registryLaunch[0:64] | registryIndex[64:72] | paramsLaunch[72:136]
-    ///             | paramsIndex[136:144] | heartbeatBps[144:160]. Higher bits must be zero.
+    /// bindingWord = heartbeatBps[144:160]; bits 0-144 (the v3.7 launch coordinates) must be zero because
+    /// IMD launch numbers cannot be reserved. Coordinates are supplied and proven at bind time (v3.8).
+    /// gameConfigHash = keccak256(abi.encode(starterRoot, freeRoot, snapshotBlock, endowment)); the token
+    /// is deliberately excluded because the Desk bootstrap precedes the token launch.
     constructor(
         address intake_,
         address delivery_,
@@ -158,8 +163,8 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
                 || o.action == bytes32(0) || o.maxPrice == 0 || o.questionChain == 0 || o.toBlock < o.fromBlock
                 || o.questions[0] == bytes32(0) || o.questions[1] == bytes32(0) || o.questions[0] == o.questions[1]
                 || o.bodies[0] == bytes32(0) || o.bodies[1] == bytes32(0) || b.factory == address(0)
-                || b.gameConfigHash == bytes32(0) || b.registryLaunch == 0 || b.paramsLaunch == 0
-                || b.registryIndex >= 8 || b.paramsIndex >= 8 || b.heartbeatBps < 200 || b.heartbeatBps > 5000
+                || b.gameConfigHash == bytes32(0) || b.registryLaunch != 0 || b.paramsLaunch != 0
+                || b.registryIndex != 0 || b.paramsIndex != 0 || b.heartbeatBps < 200 || b.heartbeatBps > 5000
                 || b.heartbeatCap != 1 ether
         ) revert InvalidValue();
         config = o;
@@ -174,12 +179,21 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
         return binding;
     }
 
-    /// @notice Break the CREATE2 dependency cycle with proof of the frozen configuration and exact bytecode.
-    /// The factory admits each launch once and authenticates its deployer. Its frozen coordinates
-    /// identify the only Registry/Params it can create. Market is intentionally not in gameConfigHash:
-    /// the market commits Params and is itself deployed after Desk, avoiding a CREATE2 hash cycle.
-    function bind(address candidate, bytes calldata registryCode, bytes calldata paramsCode) external {
+    /// @notice Permissionless one-time binding with bind-time proofs: the ProjectFactory admits each launch
+    /// once and only from its deployer, so the recorded coordinates plus pinned creation code identify the
+    /// only Registry/Params it can have created. The frozen roots/snapshot/endowment must match the
+    /// commitment and Params must point back to this Desk. No launch number is known at construction.
+    function bind(
+        address candidate,
+        bytes calldata registryCode,
+        bytes calldata paramsCode,
+        uint64 registryLaunch,
+        uint8 registryIndex,
+        uint64 paramsLaunch,
+        uint8 paramsIndex
+    ) external {
         if (address(registry) != address(0)) revert AlreadyDone();
+        if (registryLaunch == 0 || paramsLaunch == 0 || registryIndex >= 8 || paramsIndex >= 8) revert InvalidValue();
         if (keccak256(registryCode) != SwarmCode.REGISTRY || keccak256(paramsCode) != SwarmCode.PARAMS) {
             revert InvalidProof();
         }
@@ -187,20 +201,20 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
         ISwarmRegistry r = ISwarmRegistry(candidate);
         if (
             r.factory() != b.factory
-                || keccak256(abi.encode(r.token(), r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment()))
+                || keccak256(abi.encode(r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment()))
                     != b.gameConfigHash
         ) revert InvalidProof();
         address p = ISwarmFactory(b.factory)
             .predictContract(
-                b.paramsLaunch,
-                b.paramsIndex,
+                paramsLaunch,
+                paramsIndex,
                 bytes.concat(paramsCode, abi.encode(address(this), b.heartbeatBps, b.heartbeatCap))
             );
         if (r.params() != p || p.code.length == 0 || Params(p).swarmWallet() != address(this)) revert InvalidProof();
         address expected = ISwarmFactory(b.factory)
             .predictContract(
-                b.registryLaunch,
-                b.registryIndex,
+                registryLaunch,
+                registryIndex,
                 bytes.concat(
                     registryCode,
                     abi.encode(
@@ -215,7 +229,11 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
                     )
                 )
             );
-        if (expected != candidate) revert InvalidProof();
+        if (expected != candidate || candidate.code.length == 0) revert InvalidProof();
+        binding.registryLaunch = registryLaunch;
+        binding.registryIndex = registryIndex;
+        binding.paramsLaunch = paramsLaunch;
+        binding.paramsIndex = paramsIndex;
         registry = r;
         emit Bound(candidate);
     }
@@ -266,13 +284,31 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
     {
         bool direct = msg.sender == config.intake;
         if (!direct && msg.sender != config.delivery) revert Unauthorized();
+        _accept(direct, msg.sender, intakeId, a, signature);
+    }
+
+    /// @notice v3.8 heartbeat relay. Schedules bought on Ethereum with consumer {4663, this Desk} produce an
+    /// attestation served over HTTP; anyone relays it here. Exactly the checks of a delivered result apply:
+    /// attester signature in this Desk's domain, pinned question, context window, panel, slot/epoch
+    /// freshness and once per oracle UUID. The relayer has no authority: the bytes are the attester's.
+    function submit(OracleAttestation.Attestation calldata a, bytes calldata signature) external {
+        _accept(false, address(0), a.requestId, a, signature);
+    }
+
+    function _accept(
+        bool direct,
+        address source,
+        bytes32 intakeId,
+        OracleAttestation.Attestation calldata a,
+        bytes calldata signature
+    ) private {
         if (address(registry) == address(0)) revert NotConfigured();
         uint8 stream;
         if (a.questionHash == config.questions[0]) stream = 0;
         else if (a.questionHash == config.questions[1]) stream = 1;
         else revert InvalidProof();
         Pending memory p = pending[intakeId];
-        bytes32 deliveryKey = keccak256(abi.encode(msg.sender, intakeId));
+        bytes32 deliveryKey = keccak256(abi.encode(source, intakeId));
         if (consumed[a.requestId] || delivered[deliveryKey]) {
             emit AnswerIgnored(a.requestId, 1);
             return;
@@ -372,7 +408,8 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
         if (current > base + 1 || current < base) return;
         uint256 maxKind = Civic(registry.module(12)).enabled(7) ? 9 : 7;
         uint8 kind = uint8(_clamp(uint256(v[2]), 0, maxKind));
-        uint16 severity = uint16(_clamp(uint256(v[3]), 5000, 10000));
+        // v3.8: the swarm chooses kind and severity within a safe band instead of a fixed 9000.
+        uint16 severity = uint16(_clamp(uint256(v[3]), SEVERITY_MIN, SEVERITY_MAX));
         districtHint = uint8(_clamp(uint256(v[4]), 0, 7)); // Advisory only; preserve weighted district/entropy rules.
         lastEventEpoch = base;
         for (uint256 e = base + 1; e <= base + 2; ++e) {

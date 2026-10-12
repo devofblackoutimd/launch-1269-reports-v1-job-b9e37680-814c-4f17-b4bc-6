@@ -35,7 +35,9 @@ contract HookBindingTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         network = makeAddr("network");
-        hook = new TestV4Market(address(manager), address(token), network, address(bindingFactory), bindingConfigHash());
+        hook = new TestV4Market(
+            address(manager), address(token), network, address(bindingFactory), address(desk), bindingConfigHash()
+        );
         vm.deal(address(manager), 100 ether);
         manager.initializeHook(hook);
         vm.warp(vm.getBlockTimestamp() + 60 minutes); // past the v3.3 launch tax and max-buy window
@@ -66,12 +68,12 @@ contract HookBindingTest is BaseTest {
         hook.flushFees();
         FeeRouter f = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(f), 7, 1);
+        bindHook(hook, address(f));
         assertEq(address(hook.fees()), address(f));
         assertEq(address(hook.params()), address(d.params));
         vm.expectRevert(AlreadyDone.selector);
         vm.prank(team);
-        hook.bindFeeRouter(address(f), 7, 1);
+        bindHook(hook, address(f));
         vm.prank(bob);
         hook.flushFees();
         assertEq(hook.heldBase(), 0);
@@ -92,14 +94,14 @@ contract HookBindingTest is BaseTest {
     function testWrongRouterAndMissingCodeRejectedBeforePermanentBind() public {
         vm.expectRevert(InvalidAddress.selector);
         vm.prank(team);
-        hook.bindFeeRouter(alice, 7, 1);
+        bindHook(hook, alice);
         vm.expectRevert();
         vm.prank(team);
-        hook.bindFeeRouter(address(d.fees), 7, 1);
+        bindHook(hook, address(d.fees));
         assertEq(address(hook.fees()), address(0));
         FeeRouter f = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(f), 7, 1);
+        bindHook(hook, address(f));
     }
 
     function testLookAlikeCannotBindEvenWhenTeamCalls() public {
@@ -107,7 +109,7 @@ contract HookBindingTest is BaseTest {
         RejectingHookRouter f = new RejectingHookRouter(address(token), address(hook), address(d.params));
         vm.expectRevert();
         vm.prank(team);
-        hook.bindFeeRouter(address(f), 7, 1);
+        bindHook(hook, address(f));
         assertEq(address(hook.fees()), address(0));
         assertEq(hook.heldBase(), 0.02 ether);
         _buy();

@@ -1,12 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {PoolKey, SwapParams, IV4PoolManager} from "../../src/interfaces/IV4.sol";
+import {GameRegistry} from "../../src/GameRegistry.sol";
+import {StandardMarket} from "../../src/StandardMarket.sol";
 import {V4Market} from "../../src/V4Market.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract TestV4Market is V4Market {
-    constructor(address manager_, address token_, address network_, address factory_, bytes32 config_)
-        V4Market(manager_, token_, network_, 0, 60, msg.sender, factory_, config_)
+    constructor(address manager_, address token_, address network_, address factory_, address desk_, bytes32 config_)
+        V4Market(manager_, token_, network_, 12500, 60, msg.sender, factory_, desk_, config_)
+    {}
+    function _validateHookAddress() internal pure override {}
+
+    /// @dev Fixtures bind a second canonical-code registry whose market is this hook while the fixture Desk
+    /// stays bound to the mock-market registry. Every other proof (coordinates, Params, config) is real.
+    function _canonical(GameRegistry) internal pure override returns (bool) {
+        return true;
+    }
+}
+
+/// @dev Full v3.8 proof including the Desk binding, for adversarial tests.
+contract StrictTestV4Market is V4Market {
+    constructor(address manager_, address token_, address network_, address factory_, address desk_, bytes32 config_)
+        V4Market(manager_, token_, network_, 12500, 60, msg.sender, factory_, desk_, config_)
     {}
     function _validateHookAddress() internal pure override {}
 }
@@ -63,5 +79,42 @@ contract MockV4Manager is IV4PoolManager {
 
     function settle() external payable returns (uint256) {
         return msg.value;
+    }
+}
+
+/// @dev Real flag validation and real PoolManager path; only the fixture's two-registry Desk relaxation.
+contract IntegrationV4Market is V4Market {
+    constructor(
+        address manager_,
+        address token_,
+        address network_,
+        uint24 fee_,
+        int24 spacing_,
+        address launcher_,
+        address factory_,
+        address desk_,
+        bytes32 config_
+    ) V4Market(manager_, token_, network_, fee_, spacing_, launcher_, factory_, desk_, config_) {}
+
+    function _canonical(GameRegistry) internal pure override returns (bool) {
+        return true;
+    }
+}
+
+contract IntegrationStandardMarket is StandardMarket {
+    constructor(
+        address manager_,
+        address token_,
+        address network_,
+        uint24 fee_,
+        int24 spacing_,
+        address launcher_,
+        address factory_,
+        address desk_,
+        bytes32 config_
+    ) StandardMarket(manager_, token_, network_, fee_, spacing_, launcher_, factory_, desk_, config_) {}
+
+    function _canonical(GameRegistry) internal pure override returns (bool) {
+        return true;
     }
 }

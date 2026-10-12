@@ -1,6 +1,6 @@
-# BLACKOUT v3.7
+# BLACKOUT v3.8
 
-Source-only continuation of v3.6. No deployment, broadcast, token launch or mint. [@IMDBlackout](https://x.com/IMDBlackout) · [playblackout.xyz](https://playblackout.xyz) · [free pack claim](https://playblackout.xyz/freepack).
+Source-only continuation of v3.7 against the real IMD platform (research job b94e6839): no launch number is known at construction, the 20% endowment goes through an ownerless `EndowmentEscrow`, the hook matches the platform pool fee 12500, and the Desk accepts relayed attestations through `submit`. See [launch-v38.md](launch-v38.md) for what is done and what is still open. No deployment, broadcast, token launch or mint. [@IMDBlackout](https://x.com/IMDBlackout) · [playblackout.xyz](https://playblackout.xyz) · [free pack claim](https://playblackout.xyz/freepack).
 
 Packs, rooms, repairs, enhancement and lobbying use the existing token. Prices follow the last settled mining yield with explicit floors. Packs and lobbying send 88% to rewards, 10% to the team and 2% to the capped heartbeat; the latter two shares queue for bounded sales through the official pool. Other spending returns entirely to rewards. ETH purchases use an atomic swap-and-pack zap with minimum output. The normal swap fee schedule is retained.
 
@@ -13,7 +13,9 @@ The code retains immutable deployment identities, exact creation-code enrollment
 - [Implementation report and open decisions](report.md)
 - [Pack options, simulations and limitations](artifacts/v35/simulation.md)
 - [Read API and game rules](docs/api-v35.md)
+- [v3.8 launch kit, blocker table and open items](launch-v38.md)
 - [v3.7 launch parameters, exact oracle bodies and operations](launch-v37.md)
+- [Platform research report b94e6839 (copy)](docs/research/b94e6839-platform-report.md)
 - [Independent v3.7 contributor review](docs/review-v37-independent.md)
 - [Entropy capture operations](docs/entropy-v34.md)
 - [Historical v3.4 report](docs/report-v34.md)
@@ -40,7 +42,7 @@ After a Solidity change: format, build, regenerate module pins with `python3 too
 
 ## After launch
 
-Follow [launch-v37.md](launch-v37.md); earlier launch guides are historical. The requester supplies the existing token, launch identities and coordinates, and the frozen free-pack / Identity MD roots and snapshot. Balanced packs are fixed at deployment. No swarm wallet is supplied: every swarm authority points to the non-upgradeable SwarmDesk, whose only inputs are attested oracle answers. Both roots are constructor arguments; free claims retain the 30-day window.
+Follow [launch-v38.md](launch-v38.md) (order, wiring calls, objective texts); `launch-v37.md` keeps the oracle bodies and question definitions. The requester supplies the existing token, launch identities and coordinates, and the frozen free-pack / Identity MD roots and snapshot. Balanced packs are fixed at deployment. No swarm wallet is supplied: every swarm authority points to the non-upgradeable SwarmDesk, whose only inputs are attested oracle answers. Both roots are constructor arguments; free claims retain the 30-day window.
 
 Ethereum-funded IMD schedules deliver four event answers per day and one weekly regulator (about 2.0714 IMD/day). Permissionless keepers execute committed answers and enable announced phases after notice. Anyone can top up SwarmDesk with Robinhood IMD for its rate-limited backup asks. No game administrator, signer key, root setter, profile selection or moderation path exists. Oracle endpoints and signer are immutable under this explicit no-admin policy.
 

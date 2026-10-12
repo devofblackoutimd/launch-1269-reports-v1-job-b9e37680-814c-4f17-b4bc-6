@@ -13,8 +13,9 @@ contract StandardMarket is V4Market {
         int24 spacing_,
         address launcher_,
         address factory_,
+        address desk_,
         bytes32 gameConfigHash_
-    ) V4Market(manager_, token_, network_, fee_, spacing_, launcher_, factory_, gameConfigHash_) {
+    ) V4Market(manager_, token_, network_, fee_, spacing_, launcher_, factory_, desk_, gameConfigHash_) {
         storedFeeWad = 100 ether;
     }
 

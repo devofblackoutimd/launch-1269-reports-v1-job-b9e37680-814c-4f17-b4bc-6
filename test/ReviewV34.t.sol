@@ -2,7 +2,7 @@
 pragma solidity 0.8.26;
 
 import {BaseTest} from "./Base.t.sol";
-import {TestV4Market, MockV4Manager} from "./mocks/MockV4Manager.sol";
+import {TestV4Market, StrictTestV4Market, MockV4Manager} from "./mocks/MockV4Manager.sol";
 import {FarmRewards} from "../src/FarmRewards.sol";
 import {GameRegistry} from "../src/GameRegistry.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
@@ -76,7 +76,12 @@ contract ReviewV34Test is BaseTest {
     function testCanonicalCompetingRegistryCannotTakeOverBinding() public {
         MockV4Manager manager = new MockV4Manager();
         TestV4Market hook = new TestV4Market(
-            address(manager), address(token), makeAddr("review network"), address(bindingFactory), bindingConfigHash()
+            address(manager),
+            address(token),
+            makeAddr("review network"),
+            address(bindingFactory),
+            address(desk),
+            bindingConfigHash()
         );
         Params attackerParams = new Params(bob, 200, 1 ether);
         FeeRouter competing = _router(address(hook), address(attackerParams), 7);
@@ -86,7 +91,7 @@ contract ReviewV34Test is BaseTest {
         // The immutable game-configuration commitment must still reject their Params.
         vm.expectRevert(InvalidProof.selector);
         vm.prank(bob);
-        hook.bindFeeRouter(address(competing), 7, 1);
+        bindHook(hook, address(competing));
         assertEq(address(hook.fees()), address(0));
 
         // The production factory admits a launch number only once. A wrongly authorized
@@ -96,15 +101,25 @@ contract ReviewV34Test is BaseTest {
         assertEq(address(hook.fees()), address(0));
     }
 
+    /// @dev v3.8: a twin registry with identical configuration and canonical Params at other coordinates
+    /// passes every static proof but is not the registry the Desk bound to, so the strict hook refuses it.
     function testSameConfigurationAtUncommittedCoordinatesCannotBind() public {
         MockV4Manager manager = new MockV4Manager();
-        TestV4Market hook = new TestV4Market(
-            address(manager), address(token), makeAddr("review network"), address(bindingFactory), bindingConfigHash()
+        StrictTestV4Market hook = new StrictTestV4Market(
+            address(manager),
+            address(token),
+            makeAddr("review network"),
+            address(bindingFactory),
+            address(desk),
+            bindingConfigHash()
         );
         FeeRouter competing = _router(address(hook), address(d.params), 8);
         vm.expectRevert(InvalidProof.selector);
         vm.prank(bob);
         hook.bindFeeRouter(address(competing), 8, 1);
+        // Wrong coordinates for the same twin are refused as well.
+        vm.expectRevert(InvalidProof.selector);
+        hook.bindFeeRouter(address(competing), 9, 1);
         assertEq(address(hook.fees()), address(0));
     }
 

@@ -4,6 +4,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {GameRegistry, IApplicationFactory} from "./GameRegistry.sol";
+import {Params} from "./Params.sol";
+
+interface IHookDesk {
+    function registry() external view returns (address);
+}
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 interface IHookParams {
@@ -22,8 +27,11 @@ interface IHookRouter {
 import {IV4PoolManager, PoolKey, SwapParams} from "./interfaces/IV4.sol";
 import "./lib/Errors.sol";
 
-/// @notice Optional, immutable ETH/token v4 hook + buy adapter. Must be selected as the launch pool's hook.
-/// @dev Implements the TOTAL IMD-style fee (not an add-on to a second 1.25% fee hook).
+/// @notice Immutable ETH/token v4 hook + buy adapter, selected as the IMD launch pool's hook.
+/// @dev v3.8: the pool carries the platform LP fee 12500 (1% to the paying wallet via LaunchFactory.claimFees,
+/// 0.25% network). The hook's own charges come on top. The LaunchFactory initializes the pool, so
+/// afterInitialize authenticates its sender as `launcher` ($factory). No launch number is known at
+/// construction: the registry is proven at bind time. Remaining v3.8 item: fold NETWORK_BPS into the LP fee.
 contract V4Market is ReentrancyGuard {
     using SafeERC20 for IERC20;
     bool private selling;
@@ -85,6 +93,13 @@ contract V4Market is ReentrancyGuard {
     );
     event NetworkPaid(uint256 amount);
 
+    uint24 public constant POOL_FEE = 12500;
+    address public immutable desk;
+
+    /// @param launcher_ the LaunchFactory ($factory): it initializes the pool inside the launch transaction.
+    /// @param factory_ the ProjectFactory used to prove application contracts by CREATE2 prediction.
+    /// @param desk_ the already-deployed SwarmDesk bootstrap; the canonical game is the one it binds to.
+    /// @param gameConfigHash_ keccak256(abi.encode(starterRoot, freeRoot, snapshotBlock, endowment)).
     constructor(
         address manager_,
         address token_,
@@ -93,11 +108,13 @@ contract V4Market is ReentrancyGuard {
         int24 spacing_,
         address launcher_,
         address factory_,
+        address desk_,
         bytes32 gameConfigHash_
     ) {
         if (
             gameConfigHash_ == bytes32(0) || launcher_ == address(0) || factory_ == address(0) || manager_ == address(0)
-                || token_ == address(0) || network_ == address(0) || spacing_ <= 0 || spacing_ > 32767 || fee_ != 0
+                || token_ == address(0) || network_ == address(0) || desk_ == address(0) || spacing_ <= 0
+                || spacing_ > 32767 || fee_ != POOL_FEE
         ) revert InvalidValue();
         gameConfigHash = gameConfigHash_;
         launcher = launcher_;
@@ -105,15 +122,18 @@ contract V4Market is ReentrancyGuard {
         manager = IV4PoolManager(manager_);
         token = token_;
         networkRecipient = network_;
+        desk = desk_;
         poolFee = fee_;
         tickSpacing = spacing_;
         poolId = keccak256(abi.encode(PoolKey(address(0), token_, fee_, spacing_, address(this))));
         _validateHookAddress();
     }
 
-    /// @notice Permissionless, one-time binding to a canonical factory-deployed registry and its pinned FeeRouter.
-    /// The proof supplies only the registry's deployment coordinates. All configuration is read and committed
-    /// into its exact creation code; a look-alike registry cannot pass the CREATE2 prediction.
+    /// @notice Permissionless, one-time binding with bind-time proofs (v3.8). The caller supplies the
+    /// registry's recorded factory coordinates. The registry must be the factory's CREATE2 result for its
+    /// own exact initcode, its frozen configuration must match the commitment, its Params must be the
+    /// Params of the registry the Desk bound to (the Desk proved that Params against pinned code and the
+    /// factory), Params must point at the Desk, and in the strict path the Desk must have bound to it.
     function bindFeeRouter(address router, uint64 registryLaunch, uint256 registryIndex) external nonReentrant {
         if (address(fees) != address(0)) revert AlreadyDone();
         if (router.code.length == 0) revert InvalidAddress();
@@ -123,22 +143,17 @@ contract V4Market is ReentrancyGuard {
         if (
             address(r.factory()) != address(applicationFactory) || r.token() != token || !_routerMarketValid(r.market())
         ) revert InvalidValue();
-        if (
-            keccak256(
-                    abi.encode(
-                        r.params(),
-                        r.starterRoot(),
-                        r.freeRoot(),
-                        r.snapshotBlock(),
-                        r.endowment(),
-                        registryLaunch,
-                        registryIndex
-                    )
-                ) != gameConfigHash
-        ) revert InvalidProof();
+        if (keccak256(abi.encode(r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment())) != gameConfigHash) {
+            revert InvalidProof();
+        }
+        address p = r.params();
+        address bound = IHookDesk(desk).registry();
+        if (bound == address(0) || GameRegistry(bound).params() != p || Params(p).swarmWallet() != desk) {
+            revert InvalidProof();
+        }
         bytes memory args = abi.encode(
             r.token(),
-            r.params(),
+            p,
             r.market(),
             r.starterRoot(),
             r.freeRoot(),
@@ -151,14 +166,22 @@ contract V4Market is ReentrancyGuard {
         if (applicationFactory.predictContract(registryLaunch, registryIndex, initCode) != address(r)) {
             revert InvalidProof();
         }
+        if (!_canonical(r)) revert InvalidProof();
         // Enrollment proves exact FeeRouter initcode (including registry) and its factory CREATE2 address.
         if (
             r.module(6) != router || candidate.token() != token || candidate.market() != r.market()
-                || candidate.params() != r.params()
-        ) revert InvalidValue();
+                || candidate.params() != p
+        ) {
+            revert InvalidValue();
+        }
         fees = candidate;
-        params = IHookParams(r.params());
-        emit Bound(router, r.params());
+        params = IHookParams(p);
+        emit Bound(router, p);
+    }
+
+    /// @dev The Desk binds once; its registry is the canonical game.
+    function _canonical(GameRegistry r) internal view virtual returns (bool) {
+        return IHookDesk(desk).registry() == address(r);
     }
 
     /// @notice Permissionless forwarding, kept separate so a receiver cannot interrupt pool swaps.

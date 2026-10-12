@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {BaseTest} from "./Base.t.sol";
+import {GameRegistry} from "../src/GameRegistry.sol";
 import {StandardMarket} from "../src/StandardMarket.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockV4Manager} from "./mocks/MockV4Manager.sol";
 import {SwapParams} from "../src/interfaces/IV4.sol";
 
 contract TestStandardMarket is StandardMarket {
-    constructor(address m, address t, address n, address f, bytes32 c)
-        StandardMarket(m, t, n, 0, 60, msg.sender, f, c)
+    constructor(address m, address t, address n, address f, address k, bytes32 c)
+        StandardMarket(m, t, n, 12500, 60, msg.sender, f, k, c)
     {}
     function _validateHookAddress() internal pure override {}
+
+    function _canonical(GameRegistry) internal pure override returns (bool) {
+        return true;
+    }
 }
 
 contract StandardMarketTest is BaseTest {
@@ -24,11 +29,11 @@ contract StandardMarketTest is BaseTest {
         manager = new MockV4Manager();
         network = makeAddr("standard network");
         hook = new TestStandardMarket(
-            address(manager), address(token), network, address(bindingFactory), bindingConfigHash()
+            address(manager), address(token), network, address(bindingFactory), address(desk), bindingConfigHash()
         );
         fees = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(fees), 7, 1);
+        bindHook(hook, address(fees));
         vm.deal(address(manager), 1000 ether);
         token.transfer(address(manager), 1000 ether);
         manager.initializeHook(hook);

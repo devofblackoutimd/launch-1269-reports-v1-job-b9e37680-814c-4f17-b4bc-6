@@ -34,11 +34,11 @@ contract StandardAdapter is ReentrancyGuard {
         fees = fees_;
         standardHook = hook_;
         tickSpacing = spacing_;
-        poolId = keccak256(abi.encode(PoolKey(address(0), token_, 0, spacing_, hook_)));
+        poolId = keccak256(abi.encode(PoolKey(address(0), token_, 12500, spacing_, hook_)));
     }
 
     function key() public view returns (PoolKey memory) {
-        return PoolKey(address(0), address(token), 0, tickSpacing, standardHook);
+        return PoolKey(address(0), address(token), 12500, tickSpacing, standardHook);
     }
 
     function quote(uint256 ethAmount) public view returns (uint256) {

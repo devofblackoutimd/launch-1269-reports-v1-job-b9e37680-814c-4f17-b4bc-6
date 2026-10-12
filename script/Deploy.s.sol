@@ -24,6 +24,7 @@ import "../src/lib/Errors.sol";
 /// @dev Local fixture for the platform's predictContract/CREATE2 behavior, never a launch target.
 contract LocalApplicationFactory {
     mapping(uint64 => mapping(uint256 => bool)) public used;
+    mapping(uint64 => bool) public isRecorded;
 
     function predictContract(uint64 launchNumber, uint256 index, bytes calldata initCode)
         external
@@ -47,6 +48,7 @@ contract LocalApplicationFactory {
         if (index >= 8 || launchNumber == 0) revert InvalidValue();
         if (used[launchNumber][index]) revert AlreadyDone();
         used[launchNumber][index] = true;
+        isRecorded[launchNumber] = true;
         bytes32 salt = keccak256(abi.encode(launchNumber, index));
         assembly ("memory-safe") { result := create2(0, add(initCode, 32), mload(initCode), salt) }
         if (result == address(0)) revert InvalidValue();
@@ -97,16 +99,15 @@ contract Deploy is Script {
                 && c.endowmentBps != 2500
         ) revert InvalidValue();
         LocalApplicationFactory factory = new LocalApplicationFactory();
+        // v3.8: no launch coordinates at construction; the token is excluded (Desk precedes the token launch).
         SwarmDesk.BindingConfig memory binding = SwarmDesk.BindingConfig(
             address(factory),
-            1,
-            1,
-            1,
+            0,
+            0,
+            0,
             0,
             keccak256(
-                abi.encode(
-                    c.token, c.starterRoot, c.freeRoot, c.snapshotBlock, 1_000_000_000 ether * c.endowmentBps / 10000
-                )
+                abi.encode(c.starterRoot, c.freeRoot, c.snapshotBlock, 1_000_000_000 ether * c.endowmentBps / 10000)
             ),
             c.heartbeatBps,
             c.heartbeatCap
@@ -148,7 +149,7 @@ contract Deploy is Script {
                 )
             )
         );
-        desk.bind(address(d.registry), type(GameRegistry).creationCode, type(Params).creationCode);
+        desk.bind(address(d.registry), type(GameRegistry).creationCode, type(Params).creationCode, 1, 1, 1, 0);
         string[14] memory names = [
             "RewardPool",
             "FarmRewards",

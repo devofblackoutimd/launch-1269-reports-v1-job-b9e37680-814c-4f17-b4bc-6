@@ -468,11 +468,12 @@ contract LaunchProtectionTest is BaseTest {
             address(token),
             makeAddr("network recipient"),
             address(bindingFactory),
+            address(desk),
             bindingConfigHash()
         );
         d.fees = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(d.fees), 7, 1);
+        bindHook(hook, address(d.fees));
         vm.deal(address(manager), 10000 ether);
         token.transfer(address(manager), 10000 ether);
         manager.initializeHook(hook);
@@ -486,7 +487,7 @@ contract LaunchProtectionTest is BaseTest {
 
     function testViewsBeforeInitialization() public {
         TestV4Market fresh = new TestV4Market(
-            address(manager), address(token), makeAddr("n"), address(bindingFactory), bindingConfigHash()
+            address(manager), address(token), makeAddr("n"), address(bindingFactory), address(desk), bindingConfigHash()
         );
         assertEq(fresh.currentBuyTaxBps(), 9000);
         assertEq(fresh.launchTaxTimeLeft(), 30 minutes);

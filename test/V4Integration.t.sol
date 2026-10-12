@@ -2,6 +2,7 @@
 pragma solidity 0.8.26;
 import {BaseTest} from "./Base.t.sol";
 import {PoolManager} from "v4-core/src/PoolManager.sol";
+import {IntegrationV4Market} from "./mocks/MockV4Manager.sol";
 import {V4Market} from "../src/V4Market.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {IV4PoolManager, PoolKey, SwapParams} from "../src/interfaces/IV4.sol";
@@ -31,15 +32,16 @@ contract V4IntegrationTest is BaseTest {
         network = makeAddr("integration network");
         manager = RealManager(address(new PoolManager(address(this))));
         bytes memory code = abi.encodePacked(
-            type(V4Market).creationCode,
+            type(IntegrationV4Market).creationCode,
             abi.encode(
                 address(manager),
                 address(token),
                 network,
-                uint24(0),
+                uint24(12500),
                 int24(60),
                 address(this),
                 address(bindingFactory),
+                address(desk),
                 bindingConfigHash()
             )
         );
@@ -50,19 +52,20 @@ contract V4IntegrationTest is BaseTest {
             address target = vm.computeCreate2Address(salt, hash, address(this));
             if (uint160(target) & 0x3fff == 0x10cc) break;
         }
-        hook = new V4Market{salt: salt}(
+        hook = new IntegrationV4Market{salt: salt}(
             address(manager),
             address(token),
             network,
-            0,
+            12500,
             60,
             address(this),
             address(bindingFactory),
+            address(desk),
             bindingConfigHash()
         );
         router = canonicalFees(address(hook));
         vm.prank(team);
-        hook.bindFeeRouter(address(router), 7, 1);
+        bindHook(hook, address(router));
         manager.initialize(hook.key(), uint160(1 << 96));
         manager.unlock(abi.encode(uint8(0), uint256(1000 ether)));
         vm.warp(vm.getBlockTimestamp() + 60 minutes);
