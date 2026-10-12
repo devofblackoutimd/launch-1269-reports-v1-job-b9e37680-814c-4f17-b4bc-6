@@ -88,14 +88,18 @@ contract GridOperator is GameModule, ReentrancyGuard {
         return uint256(keccak256(abi.encodePacked(p))) % 8;
     }
 
+    /// @notice On-chain severity floor for submitted plans (v3.9). The SwarmDesk additionally clamps attested
+    /// severities to its own 5000-7000 band; the fallback table keeps 10000.
+    uint16 public constant SEVERITY_FLOOR = 3000;
+
     function submitPlan(uint256 e, Kind kind, uint16 severity, bytes32 number, string calldata letter) external {
         if (msg.sender != swarmWallet()) revert Unauthorized();
         uint256 current = rewards().epoch();
         // Reserved Heatwave/Festival plans need Civic feature 7 (v3.6 phased release).
         if (uint256(kind) > uint256(Kind.Cheap) && !Civic(registry.module(12)).enabled(7)) revert FeatureDisabled();
         if (
-            e <= current || e > current + 2 || severity < 5000 || severity > 10000 || bytes(letter).length == 0
-                || bytes(letter).length > 1024
+            e <= current || e > current + 2 || severity < SEVERITY_FLOOR || severity > 10000
+                || bytes(letter).length == 0 || bytes(letter).length > 1024
         ) revert InvalidValue();
         if (plans[e].submitted) revert AlreadyDone();
         plans[e] = Plan(kind, severity, number, letter, true);

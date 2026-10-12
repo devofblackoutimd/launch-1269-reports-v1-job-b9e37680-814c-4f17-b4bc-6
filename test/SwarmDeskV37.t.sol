@@ -378,10 +378,10 @@ contract SwarmDeskV37Test is BaseTest {
         assertEq(b.registryLaunch, 1);
         assertEq(b.paramsLaunch, 1);
         b.factory = address(f);
-        // Bound coordinates are recorded on chain, never accepted by the constructor.
-        bytes memory stale = SwarmArgs.encode(desk.oracleConfig(), b);
-        vm.expectRevert(InvalidValue.selector);
-        f.deploy(4, 0, bytes.concat(vm.getCode("SwarmDesk.sol:SwarmDesk"), stale));
+        // Bound coordinates are recorded on chain, never accepted by the constructor: the v3.9 twelve-word
+        // encoder has no coordinate bits at all and refuses a configuration that carries them.
+        (bool encoded,) = address(this).call(abi.encodeWithSignature("encodeStale(address)", address(f)));
+        assertFalse(encoded);
         b.registryLaunch = 0;
         b.registryIndex = 0;
         b.paramsLaunch = 0;
@@ -456,6 +456,13 @@ contract SwarmDeskV37Test is BaseTest {
         f.deploy(1, 1, bytes.concat(rCode, abi.encode("different initcode")));
     }
 
+    /// @dev Helper target for the stale-coordinate check: the encoder itself must refuse coordinates.
+    function encodeStale(address factory) external view returns (bytes memory) {
+        SwarmDesk.BindingConfig memory b = desk.bindingConfig();
+        b.factory = factory;
+        return SwarmArgs.encode(desk.oracleConfig(), b);
+    }
+
     function testFlatConstructorRejectsUnusedPackedBits() public {
         SwarmDesk.OracleConfig memory o = desk.oracleConfig();
         SwarmDesk.BindingConfig memory b = desk.bindingConfig();
@@ -464,18 +471,28 @@ contract SwarmDeskV37Test is BaseTest {
         b.paramsLaunch = 0;
         b.paramsIndex = 0;
         bytes memory args = SwarmArgs.encode(o, b);
-        assertEq(args.length, 14 * 32);
+        assertEq(args.length, 12 * 32);
         bytes memory code = vm.getCode("SwarmDesk.sol:SwarmDesk");
         LocalApplicationFactory f = new LocalApplicationFactory();
-        uint256 badContext = SwarmArgs.context(o) | (uint256(1) << 192);
-        assembly ("memory-safe") { mstore(add(args, 224), badContext) }
+        // Word 5 is the packed policy word; bits 240-255 are reserved and must be zero.
+        uint256 badPolicy = SwarmArgs.policy(o, b) | (uint256(1) << 240);
+        assembly ("memory-safe") { mstore(add(args, 192), badPolicy) }
         vm.expectRevert(InvalidValue.selector);
         f.deploy(5, 0, bytes.concat(code, args));
         args = SwarmArgs.encode(o, b);
-        uint256 badBinding = SwarmArgs.binding(b) | (uint256(1) << 160);
-        assembly ("memory-safe") { mstore(add(args, 416), badBinding) }
+        badPolicy = SwarmArgs.policy(o, b) | (uint256(1) << 255);
+        assembly ("memory-safe") { mstore(add(args, 192), badPolicy) }
         vm.expectRevert(InvalidValue.selector);
         f.deploy(5, 0, bytes.concat(code, args));
+        // The round trip of the packed word reproduces every configured value.
+        SwarmDesk fresh = SwarmDesk(f.deploy(5, 0, bytes.concat(code, SwarmArgs.encode(o, b))));
+        SwarmDesk.OracleConfig memory got = fresh.oracleConfig();
+        assertEq(got.questionChain, o.questionChain);
+        assertEq(got.fromBlock, o.fromBlock);
+        assertEq(got.toBlock, o.toBlock);
+        assertEq(got.maxPrice, o.maxPrice);
+        assertEq(fresh.bindingConfig().heartbeatBps, b.heartbeatBps);
+        assertEq(fresh.bindingConfig().heartbeatCap, 1 ether);
     }
 
     /// @dev v3.8 relay: schedules cannot deliver cross-chain, so anyone relays the HTTP attestation.

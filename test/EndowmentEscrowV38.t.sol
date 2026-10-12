@@ -6,6 +6,8 @@ import {GameRegistry} from "../src/GameRegistry.sol";
 import {RewardPool} from "../src/RewardPool.sol";
 import {Params} from "../src/Params.sol";
 import {LocalApplicationFactory} from "../script/Deploy.s.sol";
+import {SwarmDesk} from "../src/SwarmDesk.sol";
+import {SwarmArgs} from "../script/SwarmArgs.sol";
 import "../src/lib/Errors.sol";
 
 /// @dev v3.8: the token launch's remainderTo is an ownerless escrow deployed before the token; it forwards
@@ -159,32 +161,11 @@ contract EndowmentEscrowV38Test is BaseTest {
         escrow.forward(address(d.registry), 1, 1, registryCode, 1, 2, poolCode);
     }
 
+    /// @dev Re-encode the fixture Desk's oracle configuration through the canonical twelve-word encoder.
     function _deskWords(address factory, bytes32 configHash) private view returns (bytes memory) {
-        (bool ok, bytes memory data) = address(desk).staticcall(abi.encodeWithSignature("oracleConfig()"));
-        assertTrue(ok);
-        // Re-encode from the fixture Desk's oracle configuration through the canonical flat encoder.
-        return abi.encodePacked(_oracleWords(data), abi.encode(factory, uint256(200) << 144, configHash));
-    }
-
-    function _oracleWords(bytes memory raw) private pure returns (bytes memory) {
-        (
-            address intake,
-            address delivery,
-            address signer,
-            address asset,
-            bytes32 action,
-            uint256 maxPrice,
-            uint256 questionChain,
-            uint64 fromBlock,
-            uint64 toBlock,
-            bytes32[2] memory questions,
-            bytes32[2] memory bodies
-        ) = abi.decode(
-            raw, (address, address, address, address, bytes32, uint256, uint256, uint64, uint64, bytes32[2], bytes32[2])
-        );
-        uint256 context = questionChain | (uint256(fromBlock) << 64) | (uint256(toBlock) << 128);
-        return abi.encode(
-            intake, delivery, signer, asset, action, maxPrice, context, questions[0], questions[1], bodies[0], bodies[1]
-        );
+        return
+            SwarmArgs.encode(
+                desk.oracleConfig(), SwarmDesk.BindingConfig(factory, 0, 0, 0, 0, configHash, 200, 1 ether)
+            );
     }
 }

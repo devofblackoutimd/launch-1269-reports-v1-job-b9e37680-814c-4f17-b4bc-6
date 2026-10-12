@@ -96,11 +96,11 @@ contract FeeRouter is GameModule, ReentrancyGuard {
         _base();
     }
 
+    /// @dev v3.9: the hook's 1% swap share funds reward buys entirely. The team's swap income is the
+    /// platform's 1% of the LP fee, paid to the paying wallet by LaunchFactory.claimFees, never routed here.
     function _base() private {
         if (msg.value == 0) revert InvalidValue();
-        uint256 t = msg.value / 2;
-        credit[team] += t;
-        rewardETH += msg.value - t;
+        rewardETH += msg.value;
         emit Routed(0, msg.value);
     }
 

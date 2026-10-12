@@ -32,12 +32,10 @@ contract StandardV4IntegrationTest is BaseTest {
     FeeRouter internal router;
     StandardAdapter internal adapter;
     MockStandardTwap internal oracle;
-    address internal network;
 
     function setUp() public override {
         super.setUp();
         vm.deal(address(this), 10000 ether);
-        network = makeAddr("integration network");
         manager = StandardRealManager(address(new PoolManager(address(this))));
         oracle = new MockStandardTwap();
         bytes memory code = abi.encodePacked(
@@ -45,7 +43,6 @@ contract StandardV4IntegrationTest is BaseTest {
             abi.encode(
                 address(manager),
                 address(token),
-                network,
                 uint24(12500),
                 int24(60),
                 address(this),
@@ -64,7 +61,6 @@ contract StandardV4IntegrationTest is BaseTest {
         hook = new IntegrationStandardMarket{salt: salt}(
             address(manager),
             address(token),
-            network,
             12500,
             60,
             address(this),
@@ -123,9 +119,8 @@ contract StandardV4IntegrationTest is BaseTest {
         adapter.buy{value: 0.5 ether}(0.485 ether, address(d.pool));
         assertGe(token.balanceOf(address(d.pool)) - poolBefore, 0.485 ether);
         if (hook.heldBase() != 0) hook.flushFees();
-        assertEq(router.credit(team) - teamBefore, 0.0025 ether);
-        assertEq(router.rewardETH(), 0.0025 ether);
-        assertEq(hook.networkCredit(), 0.00125 ether);
+        assertEq(router.credit(team) - teamBefore, 0);
+        assertEq(router.rewardETH(), 0.005 ether);
         assertEq(router.heartbeatBalance(), 0);
         assertEq(address(adapter).balance, 0);
         assertEq(adapter.key().hooks, address(hook));

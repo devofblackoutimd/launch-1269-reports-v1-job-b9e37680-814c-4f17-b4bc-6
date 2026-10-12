@@ -11,7 +11,6 @@ contract FactoryTest is BaseTest {
         MarketFactory.Config memory c = MarketFactory.Config(
             makeAddr("test manager"),
             address(token),
-            makeAddr("test network"),
             60,
             address(this),
             address(bindingFactory),

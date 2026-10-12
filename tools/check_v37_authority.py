@@ -15,5 +15,5 @@ assert 'keccak256(answer) != r.answerHash' in s
 assert 'selectProfile' not in Path('script/Deploy.s.sol').read_text()
 abi=json.loads(Path('out/SwarmDesk.sol/SwarmDesk.json').read_text())['abi']
 args=next(x['inputs'] for x in abi if x['type']=='constructor')
-assert len(args)==14 and all(x['type'] in ('address','bytes32','uint256') for x in args), 'Launcher accepts at most16 flat static words'
+assert len(args)==12 and all(x['type'] in ('address','bytes32','uint256') for x in args), 'Launcher accepts at most 16 flat static words and the legacy code generator decodes at most 12'
 print('No owner, upgrade, root setter, profile selector, moderation or arbitrary-call authority in src; Desk execution commits exact oracle bytes.')

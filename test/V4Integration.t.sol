@@ -24,19 +24,16 @@ contract V4IntegrationTest is BaseTest {
     RealManager internal manager;
     V4Market internal hook;
     FeeRouter internal router;
-    address internal network;
 
     function setUp() public override {
         super.setUp();
         vm.deal(address(this), 10000 ether);
-        network = makeAddr("integration network");
         manager = RealManager(address(new PoolManager(address(this))));
         bytes memory code = abi.encodePacked(
             type(IntegrationV4Market).creationCode,
             abi.encode(
                 address(manager),
                 address(token),
-                network,
                 uint24(12500),
                 int24(60),
                 address(this),
@@ -55,7 +52,6 @@ contract V4IntegrationTest is BaseTest {
         hook = new IntegrationV4Market{salt: salt}(
             address(manager),
             address(token),
-            network,
             12500,
             60,
             address(this),
@@ -108,18 +104,17 @@ contract V4IntegrationTest is BaseTest {
         uint256 before = address(this).balance;
         manager.unlock(abi.encode(uint8(1), uint256(1 ether)));
         assertEq(before - address(this).balance, 1 ether);
-        assertEq(hook.networkCredit(), 0.0025 ether);
+        assertEq(hook.heldBase(), 0.01 ether, "exactly 1% of the buy input");
         hook.flushFees();
-        assertEq(router.credit(team), 0.01 ether);
-        uint256 oldCredit = hook.networkCredit();
+        assertEq(router.rewardETH(), 0.01 ether);
+        assertEq(router.credit(team), 0);
         uint256 oldPrice = hook.lastPrice();
         manager.unlock(abi.encode(uint8(2), uint256(100 ether)));
-        assertGt(hook.networkCredit(), oldCredit);
+        assertGt(hook.heldBase(), 0);
+        assertGt(hook.heldSellTax(), 0);
         assertGt(hook.lastPrice(), oldPrice);
         assertGt(hook.storedFeeWad(), 1000 ether);
-        assertLe(hook.storedFeeWad(), 1475 ether);
-        hook.withdrawNetwork();
-        assertGt(network.balance, 0);
+        assertLe(hook.storedFeeWad(), 1500 ether);
     }
 
     function testRealV4SystemBuyUsesTwapAndOnlySystemFunds() public {
@@ -148,7 +143,7 @@ contract V4IntegrationTest is BaseTest {
         assertEq(beforeRouter - token.balanceOf(address(router)), amount);
         assertEq(token.balanceOf(address(manager)) - beforeManager, amount);
         assertGe(received, minimum);
-        assertGt(hook.networkCredit(), 0);
+        assertGt(hook.heldBase(), 0);
         assertEq(hook.heldSellTax(), 0, "system sale has no sell surcharge");
         assertEq(router.credit(team) + router.heartbeatBalance(), received);
         assertEq(address(router).balance, received);

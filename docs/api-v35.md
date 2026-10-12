@@ -9,7 +9,7 @@ Resolve modules from `GameRegistry.module(role)`; missing roles revert `NotConfi
 | Registry | `token()`, `params()`, `market()`, `launchTime()`, `module(role)`, `starterRoot()`, `freeRoot()`, `snapshotBlock()` |
 | SwarmDesk (via Params) | `lastAnswer(stream)`, `oracleConfig()`, `bindingConfig()`, `lastLetterHash()`, `lastFailure()`, `slot(stream)`; stream0 event,1 regulator |
 | 0 RewardPool | `endowed()`, `lockedEndowment()`, `available()`, `reserved()` |
-| 1 FarmRewards | `epoch()`, `epochs(e)`, `pending(wallet)`, `lastFarmDaily(wallet)`, `lastAverageDaily()`, `lastYieldPerHash()`, `farmWeight(wallet,e)`, `districtActiveHash(d)`, `epochTime(e)` |
+| 1 FarmRewards | `epoch()`, `epochData(e)`, `pending(wallet)`, `lastFarmDaily(wallet)`, `lastAverageDaily()`, `lastYieldPerHash()`, `farmWeight(wallet,e)`, `districtActiveHash(d)`, `epochTime(e)` |
 | 2 FarmCore | `hasFarm(wallet)`, `xp(wallet)`, `paidPacks(wallet)`, `level(wallet)`, `district(wallet)`, `roomEligible(wallet,room)`, `roomUnlocked(wallet,room)`, `purchasedRoom(wallet,room)`, `autoRepairThreshold(wallet)`, `itemAt(wallet,room,slot)`, `roomStats(wallet,room)` |
 | 3 FarmItems | `ownedCount(wallet)`, `itemsByOwner(wallet,offset,limit)` (limit≤100), `data(id)`, `uri(id)`, `capacity(wallet)` |
 | 4 PackSale | `ready()`, `isOpen()`, `paused()`, `opensAt()`, `profile()`, `profileChosen()`, `profileParams(index)`, `priceBounds()`, `quote(count)`, `commits(id)` |

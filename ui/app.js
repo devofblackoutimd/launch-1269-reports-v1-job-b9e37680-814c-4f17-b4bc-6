@@ -8,7 +8,7 @@ const format = value => (Number(value)/1e18).toLocaleString(undefined,{maximumFr
 const status = text => { $('status').textContent=text; };
 const stringHex = value => {const bytes=new TextEncoder().encode(value);return word(bytes.length)+[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('').padEnd(Math.ceil(bytes.length/32)*64,'0');};
 const decodeString = value => {const offset=Number(BigInt('0x'+value.slice(2,66)))*2+2; const length=Number(BigInt('0x'+value.slice(offset,offset+64))); return new TextDecoder().decode(Uint8Array.from(value.slice(offset+64,offset+64+length*2).match(/../g)||[],x=>parseInt(x,16)));};
-let provider, wallet, modules={}, token, list, desk, busy=false;
+let provider, wallet, modules={}, token, list, desk, market, registryAddress, busy=false;
 // Generated once from the public Solidity ABI; no remote JavaScript dependency.
 const selectors = {
   'enabled(uint256)':'0x76e5c0de',
@@ -16,6 +16,12 @@ const selectors = {
   'lastLetterHash()':'0xe24b9bc9',
   'lastAnswer(uint8)':'0x1b7f4a70',
   'swarmWallet()':'0x82d9f46f',
+  'market()':'0x80f55605',
+  'registry()':'0x7b103999',
+  'fees()':'0x9af1d35a',
+  'endowed()':'0xaacd584c',
+  'currentBuyTaxBps()':'0x72aba4a9',
+  'launchTaxTimeLeft()':'0x1fb8c3bc',
   'params()':'0xcff0ab96',
   "ready()": "0x6defbf80",
   "place(uint256,uint256,uint256)": "0x52121153",
@@ -84,8 +90,9 @@ async function connect() {
  const chain=Number(BigInt(await provider.request({method:'eth_chainId'})));if(chain!==4663&&chain!==46630)throw Error('Select the published BLACKOUT Robinhood network in your wallet.');
  wallet=(await provider.request({method:'eth_requestAccounts'}))[0];
  const registry=$('registry').value.trim();if(!address(registry))throw Error('Enter the published game registry in Game connection.');
- for(const role of [0,1,2,3,4,5,7,8,10,11,12,13]) {const result=await call(registry,'module(uint256)',[role]);modules[role]='0x'+result.slice(-40);}
- token='0x'+(await call(registry,'token()')).slice(-40);
+ registryAddress=registry;
+ for(const role of [0,1,2,3,4,5,6,7,8,10,11,12,13]) {const result=await call(registry,'module(uint256)',[role]);modules[role]='0x'+result.slice(-40);}
+ token='0x'+(await call(registry,'token()')).slice(-40);market='0x'+(await call(registry,'market()')).slice(-40);
  const params='0x'+(await call(registry,'params()')).slice(-40);desk='0x'+(await call(params,'swarmWallet()')).slice(-40);
  $('connect').textContent=wallet.slice(0,6)+'…'+wallet.slice(-4);
  try{const response=await fetch('./allowlist.json',{cache:'no-store'});if(response.ok)list=await response.json();}catch{list=null;}
@@ -117,10 +124,20 @@ async function refreshSwarm() {
  $('nextPlan').textContent=p[5]===1n?`Epoch ${epoch+1n}: ${EVENT_NAMES[Number(p[1])]} · severity ${p[2]} / 10000`:`Epoch ${epoch+1n}: autonomous fallback (no submitted plan)`;
  $('swarmLetter').textContent=BigInt(letter)!==0n?`Last applied letter hash: ${letter}`:'No off-chain letter attached to the last applied answer.';
 }
+// v3.9: the wiring every player can verify: the Desk bound to this registry, the hook bound to this FeeRouter, the endowment funded.
+async function refreshWiring() {
+ if(!desk||!market)return;
+ const same=(a,b)=>a.toLowerCase()===b.toLowerCase();
+ const [bound,router,endowed,tax,left]=await Promise.all([call(desk,'registry()'),call(market,'fees()'),uint(modules[0],'endowed()'),uint(market,'currentBuyTaxBps()'),uint(market,'launchTaxTimeLeft()')]);
+ const parts=[`Swarm desk bound to this registry: ${same('0x'+bound.slice(-40),registryAddress)?'yes':'NO'}`,`Hook fee router bound: ${same('0x'+router.slice(-40),modules[6])?'yes':'NO'}`,`Endowment funded: ${endowed?'yes':'not yet'}`];
+ $('wiring').textContent=parts.join(' · ');
+ $('hookFee').textContent=left>0n?`Launch window: buys pay ${Number(tax)/100}% to the mining pool for another ${Number(left)} s (steps 90/50/25%), then 1%. The pool's 1.25% fee is the platform's.`:'Swap fees: 1.25% pool fee (platform) plus the hook\'s 1% to the mining pool on every swap; sells add the progressive surcharge.';
+}
 async function refresh() {
  if(!wallet||!modules[4])return;
  await applyPhases();
  await refreshSwarm();
+ await refreshWiring();
  const [price,daily,pending,open,epoch]=await Promise.all([uint(modules[4],'price()'),uint(modules[10],'farmDaily(address)',[wallet]),uint(modules[1],'pending(address)',[wallet]),uint(modules[4],'ready()'),uint(modules[1],'epoch()')]);
  $('packPrice').textContent=format(price)+' tokens';$('daily').textContent=format(daily)+' tokens';$('pending').textContent=format(pending)+' tokens';$('saleStatus').textContent=open?'Open · epoch '+epoch:'Closed / paused';
  const listed=list?.claims?.[wallet.toLowerCase()];const root=await call(modules[5],'freeRoot()');const claimed=await uint(modules[5],'freeClaimedBy(address)',[wallet]);

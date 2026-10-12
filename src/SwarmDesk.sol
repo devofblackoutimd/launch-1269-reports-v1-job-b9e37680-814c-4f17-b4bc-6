@@ -114,10 +114,11 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
     event Executed(uint8 indexed stream, bytes32 indexed requestId, bytes32 letterHash);
     event ActionSkipped(uint8 indexed action, bytes reason);
 
-    /// @dev Fourteen static ABI words fit the launcher's flat constructor encoder.
-    /// contextWord = chainId[0:64] | fromBlock[64:128] | toBlock[128:192].
-    /// bindingWord = heartbeatBps[144:160]; bits 0-144 (the v3.7 launch coordinates) must be zero because
-    /// IMD launch numbers cannot be reserved. Coordinates are supplied and proven at bind time (v3.8).
+    /// @dev Twelve static ABI words fit the launcher's flat constructor encoder and the legacy (non via-IR)
+    /// code generator the IMD verifier builds with, which decodes at most twelve such arguments (v3.9).
+    /// policyWord = chainId[0:32] | fromBlock[32:80] | toBlock[80:128] | maxPrice[128:224] | heartbeatBps[224:240];
+    /// bits 240-255 must be zero. No launch coordinate is taken: IMD launch numbers cannot be reserved, so
+    /// they are supplied and proven at bind time (v3.8). The heartbeat cap is fixed at 1 ether.
     /// gameConfigHash = keccak256(abi.encode(starterRoot, freeRoot, snapshotBlock, endowment)); the token
     /// is deliberately excluded because the Desk bootstrap precedes the token launch.
     constructor(
@@ -126,36 +127,30 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
         address signer_,
         address asset_,
         bytes32 action_,
-        uint256 maxPrice_,
-        uint256 contextWord,
+        uint256 policyWord,
         bytes32 eventQuestion,
         bytes32 regulatorQuestion,
         bytes32 eventBody,
         bytes32 regulatorBody,
         address factory_,
-        uint256 bindingWord,
         bytes32 gameConfigHash_
     ) OracleAttestationConsumer(signer_) {
-        if (contextWord >> 192 != 0 || bindingWord >> 160 != 0) revert InvalidValue();
+        if (policyWord >> 240 != 0) revert InvalidValue();
         OracleConfig memory o;
         o.intake = intake_;
         o.delivery = delivery_;
         o.signer = signer_;
         o.asset = asset_;
         o.action = action_;
-        o.maxPrice = maxPrice_;
-        o.questionChain = uint64(contextWord);
-        o.fromBlock = uint64(contextWord >> 64);
-        o.toBlock = uint64(contextWord >> 128);
+        o.questionChain = uint32(policyWord);
+        o.fromBlock = uint48(policyWord >> 32);
+        o.toBlock = uint48(policyWord >> 80);
+        o.maxPrice = uint96(policyWord >> 128);
         o.questions = [eventQuestion, regulatorQuestion];
         o.bodies = [eventBody, regulatorBody];
         BindingConfig memory b;
         b.factory = factory_;
-        b.registryLaunch = uint64(bindingWord);
-        b.registryIndex = uint8(bindingWord >> 64);
-        b.paramsLaunch = uint64(bindingWord >> 72);
-        b.paramsIndex = uint8(bindingWord >> 136);
-        b.heartbeatBps = uint16(bindingWord >> 144);
+        b.heartbeatBps = uint16(policyWord >> 224);
         b.heartbeatCap = 1 ether;
         b.gameConfigHash = gameConfigHash_;
         if (
@@ -163,9 +158,7 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
                 || o.action == bytes32(0) || o.maxPrice == 0 || o.questionChain == 0 || o.toBlock < o.fromBlock
                 || o.questions[0] == bytes32(0) || o.questions[1] == bytes32(0) || o.questions[0] == o.questions[1]
                 || o.bodies[0] == bytes32(0) || o.bodies[1] == bytes32(0) || b.factory == address(0)
-                || b.gameConfigHash == bytes32(0) || b.registryLaunch != 0 || b.paramsLaunch != 0
-                || b.registryIndex != 0 || b.paramsIndex != 0 || b.heartbeatBps < 200 || b.heartbeatBps > 5000
-                || b.heartbeatCap != 1 ether
+                || b.gameConfigHash == bytes32(0) || b.heartbeatBps < 200 || b.heartbeatBps > 5000
         ) revert InvalidValue();
         config = o;
         binding = b;
@@ -194,48 +187,43 @@ contract SwarmDesk is OracleAttestationConsumer, ReentrancyGuard {
     ) external {
         if (address(registry) != address(0)) revert AlreadyDone();
         if (registryLaunch == 0 || paramsLaunch == 0 || registryIndex >= 8 || paramsIndex >= 8) revert InvalidValue();
-        if (keccak256(registryCode) != SwarmCode.REGISTRY || keccak256(paramsCode) != SwarmCode.PARAMS) {
+        if (!SwarmCode.isRegistry(keccak256(registryCode)) || !SwarmCode.isParams(keccak256(paramsCode))) {
             revert InvalidProof();
         }
-        BindingConfig memory b = binding;
         ISwarmRegistry r = ISwarmRegistry(candidate);
         if (
-            r.factory() != b.factory
+            r.factory() != binding.factory
                 || keccak256(abi.encode(r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment()))
-                    != b.gameConfigHash
+                    != binding.gameConfigHash
         ) revert InvalidProof();
-        address p = ISwarmFactory(b.factory)
-            .predictContract(
-                paramsLaunch,
-                paramsIndex,
-                bytes.concat(paramsCode, abi.encode(address(this), b.heartbeatBps, b.heartbeatCap))
-            );
-        if (r.params() != p || p.code.length == 0 || Params(p).swarmWallet() != address(this)) revert InvalidProof();
-        address expected = ISwarmFactory(b.factory)
-            .predictContract(
-                registryLaunch,
-                registryIndex,
-                bytes.concat(
-                    registryCode,
-                    abi.encode(
-                        r.token(),
-                        p,
-                        r.market(),
-                        r.starterRoot(),
-                        r.freeRoot(),
-                        r.snapshotBlock(),
-                        r.endowment(),
-                        b.factory
-                    )
-                )
-            );
-        if (expected != candidate || candidate.code.length == 0) revert InvalidProof();
+        address p = _proveParams(paramsLaunch, paramsIndex, paramsCode);
+        if (r.params() != p) revert InvalidProof();
+        if (_predictRegistry(r, p, registryLaunch, registryIndex, registryCode) != candidate) revert InvalidProof();
+        if (candidate.code.length == 0) revert InvalidProof();
         binding.registryLaunch = registryLaunch;
         binding.registryIndex = registryIndex;
         binding.paramsLaunch = paramsLaunch;
         binding.paramsIndex = paramsIndex;
         registry = r;
         emit Bound(candidate);
+    }
+
+    function _proveParams(uint64 launch, uint8 index, bytes calldata code) private view returns (address p) {
+        bytes memory initCode =
+            bytes.concat(code, abi.encode(address(this), binding.heartbeatBps, binding.heartbeatCap));
+        p = ISwarmFactory(binding.factory).predictContract(launch, index, initCode);
+        if (p.code.length == 0 || Params(p).swarmWallet() != address(this)) revert InvalidProof();
+    }
+
+    function _predictRegistry(ISwarmRegistry r, address p, uint64 launch, uint8 index, bytes calldata code)
+        private
+        view
+        returns (address)
+    {
+        bytes memory args = abi.encode(
+            r.token(), p, r.market(), r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment(), binding.factory
+        );
+        return ISwarmFactory(binding.factory).predictContract(launch, index, bytes.concat(code, args));
     }
 
     function slot(uint8 stream) public view returns (uint256) {

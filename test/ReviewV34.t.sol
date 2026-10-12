@@ -76,12 +76,7 @@ contract ReviewV34Test is BaseTest {
     function testCanonicalCompetingRegistryCannotTakeOverBinding() public {
         MockV4Manager manager = new MockV4Manager();
         TestV4Market hook = new TestV4Market(
-            address(manager),
-            address(token),
-            makeAddr("review network"),
-            address(bindingFactory),
-            address(desk),
-            bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         Params attackerParams = new Params(bob, 200, 1 ether);
         FeeRouter competing = _router(address(hook), address(attackerParams), 7);
@@ -106,12 +101,7 @@ contract ReviewV34Test is BaseTest {
     function testSameConfigurationAtUncommittedCoordinatesCannotBind() public {
         MockV4Manager manager = new MockV4Manager();
         StrictTestV4Market hook = new StrictTestV4Market(
-            address(manager),
-            address(token),
-            makeAddr("review network"),
-            address(bindingFactory),
-            address(desk),
-            bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         FeeRouter competing = _router(address(hook), address(d.params), 8);
         vm.expectRevert(InvalidProof.selector);

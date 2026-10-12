@@ -1,5 +1,7 @@
 out/
 cache/
+out-launch/
+cache-launch/
 broadcast/
 __pycache__/
 !/artifacts/

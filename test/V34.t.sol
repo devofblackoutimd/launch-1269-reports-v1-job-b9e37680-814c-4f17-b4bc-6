@@ -105,12 +105,7 @@ contract V34Test is BaseTest {
     function testHookUninitializedCannotOpenOrStartEpochAndCallerCannotStartClock() public {
         MockV4Manager manager = new MockV4Manager();
         TestV4Market hook = new TestV4Market(
-            address(manager),
-            address(token),
-            makeAddr("network"),
-            address(bindingFactory),
-            address(desk),
-            bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         vm.expectRevert(Unauthorized.selector);
         vm.prank(bob);
@@ -130,12 +125,7 @@ contract V34Test is BaseTest {
     function testLaunchTaxExactBoundaries() public {
         MockV4Manager manager = new MockV4Manager();
         TestV4Market hook = new TestV4Market(
-            address(manager),
-            address(token),
-            makeAddr("network"),
-            address(bindingFactory),
-            address(desk),
-            bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         manager.initializeHook(hook);
         uint256 t = hook.initializedAt();
@@ -151,7 +141,7 @@ contract V34Test is BaseTest {
         vm.warp(t + 30 minutes - 1);
         assertEq(hook.currentBuyTaxBps(), 2500);
         vm.warp(t + 30 minutes);
-        assertEq(hook.currentBuyTaxBps(), 225);
+        assertEq(hook.currentBuyTaxBps(), 100);
         assertEq(hook.nextStepIn(), 0);
     }
 

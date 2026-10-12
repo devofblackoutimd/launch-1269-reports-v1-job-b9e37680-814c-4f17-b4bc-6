@@ -28,15 +28,19 @@ import {IV4PoolManager, PoolKey, SwapParams} from "./interfaces/IV4.sol";
 import "./lib/Errors.sol";
 
 /// @notice Immutable ETH/token v4 hook + buy adapter, selected as the IMD launch pool's hook.
-/// @dev v3.8: the pool carries the platform LP fee 12500 (1% to the paying wallet via LaunchFactory.claimFees,
-/// 0.25% network). The hook's own charges come on top. The LaunchFactory initializes the pool, so
-/// afterInitialize authenticates its sender as `launcher` ($factory). No launch number is known at
-/// construction: the registry is proven at bind time. Remaining v3.8 item: fold NETWORK_BPS into the LP fee.
+/// @dev v3.9 fee model. The pool carries the platform LP fee 12500 (1.25%): LaunchFactory.claimFees pays 1%
+/// of swap volume to the paying wallet (the team's swap income) and 0.25% to the IMD network. The hook adds
+/// no network share of its own. After the stepped launch tax window it adds exactly PROJECT_BPS (1%) to
+/// rewards on every swap, plus the progressive sell surcharge on sells. The LaunchFactory initializes the
+/// pool, so afterInitialize authenticates its sender as `launcher` ($factory). No launch number is known at
+/// construction: the registry is proven at bind time. The hook has no owner.
 contract V4Market is ReentrancyGuard {
     using SafeERC20 for IERC20;
     bool private selling;
+    /// @notice Hook share added to every swap after the launch window, entirely for reward buys.
+    uint256 public constant PROJECT_BPS = 100;
+    /// @notice Hard cap of the hook's total sell charge (base plus progressive surcharge).
     uint256 public constant TOTAL_CAP_BPS = 1500;
-    uint256 public constant NETWORK_BPS = 25;
     uint160 public constant HOOK_FLAGS = 0x10cc; // afterInitialize, before/afterSwap and both swap deltas
     IV4PoolManager public immutable manager;
     address public immutable token;
@@ -56,11 +60,9 @@ contract V4Market is ReentrancyGuard {
     event FeesFlushed(uint256 base, uint256 sellTax);
     event LaunchTaxFlushed(uint256 amount);
     event LaunchTax(address indexed sender, uint256 ethInput, uint256 taxBps, uint256 launchTax);
-    address public immutable networkRecipient;
     uint24 public immutable poolFee;
     int24 public immutable tickSpacing;
     bytes32 public immutable poolId;
-    uint256 public networkCredit;
 
     struct Volume {
         uint64 period;
@@ -79,7 +81,7 @@ contract V4Market is ReentrancyGuard {
     uint256 public updatedAt;
     uint256 public cumulative;
     uint256 public lastPrice;
-    uint256 public storedFeeWad = 200 ether;
+    uint256 public storedFeeWad = 100 ether;
     uint256 public feeTimestamp;
     bool private buying;
     event PriceObserved(uint256 timestamp, uint256 tokensPerETH);
@@ -91,7 +93,6 @@ contract V4Market is ReentrancyGuard {
         uint256 dayImbalance,
         uint256 deviation
     );
-    event NetworkPaid(uint256 amount);
 
     uint24 public constant POOL_FEE = 12500;
     address public immutable desk;
@@ -103,7 +104,6 @@ contract V4Market is ReentrancyGuard {
     constructor(
         address manager_,
         address token_,
-        address network_,
         uint24 fee_,
         int24 spacing_,
         address launcher_,
@@ -113,15 +113,13 @@ contract V4Market is ReentrancyGuard {
     ) {
         if (
             gameConfigHash_ == bytes32(0) || launcher_ == address(0) || factory_ == address(0) || manager_ == address(0)
-                || token_ == address(0) || network_ == address(0) || desk_ == address(0) || spacing_ <= 0
-                || spacing_ > 32767 || fee_ != POOL_FEE
+                || token_ == address(0) || desk_ == address(0) || spacing_ <= 0 || spacing_ > 32767 || fee_ != POOL_FEE
         ) revert InvalidValue();
         gameConfigHash = gameConfigHash_;
         launcher = launcher_;
         applicationFactory = IApplicationFactory(factory_);
         manager = IV4PoolManager(manager_);
         token = token_;
-        networkRecipient = network_;
         desk = desk_;
         poolFee = fee_;
         tickSpacing = spacing_;
@@ -147,23 +145,8 @@ contract V4Market is ReentrancyGuard {
             revert InvalidProof();
         }
         address p = r.params();
-        address bound = IHookDesk(desk).registry();
-        if (bound == address(0) || GameRegistry(bound).params() != p || Params(p).swarmWallet() != desk) {
-            revert InvalidProof();
-        }
-        bytes memory args = abi.encode(
-            r.token(),
-            p,
-            r.market(),
-            r.starterRoot(),
-            r.freeRoot(),
-            r.snapshotBlock(),
-            r.endowment(),
-            address(applicationFactory)
-        );
-        // Concatenation has a fixed, pinned creation-code prefix and one ABI tuple; no packed dynamic tuple.
-        bytes memory initCode = bytes.concat(type(GameRegistry).creationCode, args);
-        if (applicationFactory.predictContract(registryLaunch, registryIndex, initCode) != address(r)) {
+        _checkDesk(p);
+        if (applicationFactory.predictContract(registryLaunch, registryIndex, _registryInitCode(r, p)) != address(r)) {
             revert InvalidProof();
         }
         if (!_canonical(r)) revert InvalidProof();
@@ -177,6 +160,29 @@ contract V4Market is ReentrancyGuard {
         fees = candidate;
         params = IHookParams(p);
         emit Bound(router, p);
+    }
+
+    /// @dev The candidate's Params must be the Params of the registry the Desk bound to, pointing at the Desk.
+    function _checkDesk(address p) private view {
+        address bound = IHookDesk(desk).registry();
+        if (bound == address(0) || GameRegistry(bound).params() != p || Params(p).swarmWallet() != desk) {
+            revert InvalidProof();
+        }
+    }
+
+    /// @dev Concatenation has a fixed, pinned creation-code prefix and one ABI tuple; no packed dynamic tuple.
+    function _registryInitCode(GameRegistry r, address p) private view returns (bytes memory) {
+        bytes memory args = abi.encode(
+            r.token(),
+            p,
+            r.market(),
+            r.starterRoot(),
+            r.freeRoot(),
+            r.snapshotBlock(),
+            r.endowment(),
+            address(applicationFactory)
+        );
+        return bytes.concat(type(GameRegistry).creationCode, args);
     }
 
     /// @dev The Desk binds once; its registry is the canonical game.
@@ -211,6 +217,11 @@ contract V4Market is ReentrancyGuard {
 
     function _validateHookAddress() internal view virtual {
         if (uint160(address(this)) & 0x3fff != HOOK_FLAGS) revert InvalidAddress();
+    }
+
+    /// @dev The progressive sell surcharge is part of the launch hook; the standard reference path disables it.
+    function _surcharged() internal pure virtual returns (bool) {
+        return true;
     }
 
     receive() external payable {
@@ -280,8 +291,9 @@ contract V4Market is ReentrancyGuard {
         return 1e60 / averageETH;
     }
 
+    /// @notice Tokens a system buy of `ethAmount` receives at TWAP after the hook's 1% share.
     function quote(uint256 ethAmount) external view returns (uint256) {
-        uint256 netInput = ethAmount - ethAmount * (projectBps() + NETWORK_BPS) / 10000;
+        uint256 netInput = ethAmount - ethAmount * PROJECT_BPS / 10000;
         return Math.mulDiv(netInput, twap(), 1 ether);
     }
 
@@ -331,8 +343,9 @@ contract V4Market is ReentrancyGuard {
         if (s > b) day = Math.mulDiv(s - b, 10000, s + b + 2 ether);
     }
 
-    function projectBps() public pure virtual returns (uint256) {
-        return 200;
+    /// @notice The hook's own share after the launch window: exactly 1%, all to reward buys.
+    function projectBps() public pure returns (uint256) {
+        return PROJECT_BPS;
     }
 
     /// @notice Seconds since the pool was initialized (token launch). Zero before initialization.
@@ -346,7 +359,7 @@ contract V4Market is ReentrancyGuard {
         if (t < 10 minutes) return 9000;
         if (t < 20 minutes) return 5000;
         if (t < 30 minutes) return 2500;
-        return projectBps() + NETWORK_BPS;
+        return PROJECT_BPS;
     }
 
     function launchTaxTimeLeft() public view returns (uint256) {
@@ -373,20 +386,20 @@ contract V4Market is ReentrancyGuard {
     }
 
     function _sellFee(uint256 price) private returns (uint256 fee, uint256 hour, uint256 day, uint256 dev) {
-        if (projectBps() == 100) return (100, 0, 0, 0);
+        if (!_surcharged()) return (PROJECT_BPS, 0, 0, 0);
         (hour, day) = imbalances();
         uint256 average;
         // Trading is possible during warmup; the deviation component starts only when TWAP is ready.
         if (block.timestamp >= initializedAt + 31 minutes) average = twap();
         if (average != 0 && price > average) dev = Math.min(1000, 10000 - Math.mulDiv(average, 10000, price));
-        uint256 target = projectBps() + _coefficient(24, 500) * hour / 10000 + _coefficient(25, 400) * day / 10000
+        uint256 target = PROJECT_BPS + _coefficient(24, 500) * hour / 10000 + _coefficient(25, 400) * day / 10000
             + _coefficient(26, 5000) * dev / 10000;
-        target = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, target) * 1 ether;
+        target = Math.min(TOTAL_CAP_BPS, target) * 1 ether;
         uint256 fall = feeTimestamp == 0 ? 0 : (block.timestamp - feeTimestamp) * 100 ether / 10 minutes;
-        uint256 decayed = storedFeeWad > fall ? storedFeeWad - fall : projectBps() * 1 ether;
+        uint256 decayed = storedFeeWad > fall ? storedFeeWad - fall : PROJECT_BPS * 1 ether;
         storedFeeWad = Math.max(target, decayed);
         feeTimestamp = block.timestamp;
-        fee = Math.min(TOTAL_CAP_BPS - NETWORK_BPS, (storedFeeWad + 1 ether - 1) / 1 ether);
+        fee = Math.min(TOTAL_CAP_BPS, (storedFeeWad + 1 ether - 1) / 1 ether);
     }
 
     function beforeSwap(address sender, PoolKey calldata k, SwapParams calldata p, bytes calldata)
@@ -406,8 +419,8 @@ contract V4Market is ReentrancyGuard {
             heldLaunchTax += fee;
             emit LaunchTax(sender, ethIn, taxBps, fee);
         } else {
-            uint256 base = ethIn * projectBps() / 10000;
-            _take(base, 0, fee - base);
+            // Exactly PROJECT_BPS of the input, all of it the base stream (reward buys).
+            _take(fee, 0);
         }
         return (this.beforeSwap.selector, int256(fee << 128), 0);
     }
@@ -429,21 +442,24 @@ contract V4Market is ReentrancyGuard {
         if (ethDelta <= 0) revert InvalidValue();
         uint256 output = uint256(uint128(ethDelta));
         _record(true, output);
-        (uint256 bps, uint256 hour, uint256 day, uint256 dev) = _sellFee(price);
-        uint256 base = output * projectBps() / 10000;
-        uint256 excess = output * (bps - projectBps()) / 10000;
-        uint256 network = output * NETWORK_BPS / 10000;
-        _take(base, excess, network);
-        emit SellFee(sender, output, bps, hour, day, dev);
-        return (this.afterSwap.selector, int128(int256(base + excess + network)));
+        return (this.afterSwap.selector, int128(int256(_chargeSell(sender, output, price))));
     }
 
-    function _take(uint256 base, uint256 excess, uint256 network) private {
-        uint256 total = base + excess + network;
+    /// @dev Base 1% to rewards plus the progressive surcharge above it; both taken from the sell output.
+    function _chargeSell(address sender, uint256 output, uint256 price) private returns (uint256) {
+        (uint256 bps, uint256 hour, uint256 day, uint256 dev) = _sellFee(price);
+        uint256 base = output * PROJECT_BPS / 10000;
+        uint256 excess = output * (bps - PROJECT_BPS) / 10000;
+        _take(base, excess);
+        emit SellFee(sender, output, bps, hour, day, dev);
+        return base + excess;
+    }
+
+    function _take(uint256 base, uint256 excess) private {
+        uint256 total = base + excess;
         if (total != 0) manager.take(address(0), address(this), total);
         heldBase += base;
         heldSellTax += excess;
-        networkCredit += network;
     }
 
     function buy(uint256 minOut, address recipient) external payable nonReentrant returns (uint256 received) {
@@ -459,7 +475,7 @@ contract V4Market is ReentrancyGuard {
 
     function quoteSell(uint256 amount) public view returns (uint256) {
         uint256 gross = Math.mulDiv(amount, 1 ether, twap());
-        return gross - gross * (projectBps() + NETWORK_BPS) / 10000;
+        return gross - gross * PROJECT_BPS / 10000;
     }
 
     /// @notice At most 0.1% of current virtual token reserves, additionally capped by 0.1 ETH TWAP value.
@@ -494,16 +510,14 @@ contract V4Market is ReentrancyGuard {
         int128 tokenIn = int128(delta);
         if (ethOut <= 0 || tokenIn >= 0 || uint256(-int256(tokenIn)) != amount) revert InsufficientBalance();
         uint256 gross = uint256(uint128(ethOut));
-        uint256 base = gross * projectBps() / 10000;
-        uint256 network = gross * NETWORK_BPS / 10000;
-        uint256 net = gross - base - network;
+        uint256 base = gross * PROJECT_BPS / 10000;
+        uint256 net = gross - base;
         if (net < minimum) revert InsufficientBalance();
         manager.sync(token);
         IERC20(token).safeTransfer(address(manager), amount);
         manager.settle();
         manager.take(address(0), address(this), gross);
         heldBase += base;
-        networkCredit += network;
         _record(true, gross);
         (bool ok,) = recipient.call{value: net}("");
         if (!ok) revert TransferFailed();
@@ -514,9 +528,8 @@ contract V4Market is ReentrancyGuard {
         if (msg.sender != address(manager) || (!buying && !selling)) revert Unauthorized();
         if (selling) return _sellCallback(data);
         (uint256 ethIn, uint256 minOut, address recipient) = abi.decode(data, (uint256, uint256, address));
-        uint256 base = ethIn * projectBps() / 10000;
-        uint256 network = ethIn * 25 / 10000;
-        uint256 input = ethIn - base - network;
+        uint256 base = ethIn * PROJECT_BPS / 10000;
+        uint256 input = ethIn - base;
         _observe(spot());
         // v4 suppresses a hook's callbacks on its own swaps. Account for this system buy explicitly.
         int256 delta = manager.swap(key(), SwapParams(true, -int256(input), 4295128740), "");
@@ -532,17 +545,7 @@ contract V4Market is ReentrancyGuard {
         _record(false, input);
         manager.settle{value: input}();
         manager.take(token, recipient, uint256(uint128(tokenDelta)));
-        networkCredit += network;
         heldBase += base;
         return abi.encode(uint256(uint128(tokenDelta)));
-    }
-
-    function withdrawNetwork() external nonReentrant {
-        uint256 amount = networkCredit;
-        if (amount == 0) revert InsufficientBalance();
-        networkCredit = 0;
-        (bool ok,) = networkRecipient.call{value: amount}("");
-        if (!ok) revert TransferFailed();
-        emit NetworkPaid(amount);
     }
 }

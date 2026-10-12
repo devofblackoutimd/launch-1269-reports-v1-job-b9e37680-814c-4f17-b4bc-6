@@ -99,30 +99,7 @@ contract Deploy is Script {
                 && c.endowmentBps != 2500
         ) revert InvalidValue();
         LocalApplicationFactory factory = new LocalApplicationFactory();
-        // v3.8: no launch coordinates at construction; the token is excluded (Desk precedes the token launch).
-        SwarmDesk.BindingConfig memory binding = SwarmDesk.BindingConfig(
-            address(factory),
-            0,
-            0,
-            0,
-            0,
-            keccak256(
-                abi.encode(c.starterRoot, c.freeRoot, c.snapshotBlock, 1_000_000_000 ether * c.endowmentBps / 10000)
-            ),
-            c.heartbeatBps,
-            c.heartbeatCap
-        );
-        SwarmDesk desk = SwarmDesk(
-            factory.deploy(
-                3,
-                0,
-                bytes.concat(
-                    vm.getCode("SwarmDesk.sol:SwarmDesk"),
-                    SwarmArgs.encode(abi.decode(c.oracle, (SwarmDesk.OracleConfig)), binding)
-                )
-            )
-        );
-
+        SwarmDesk desk = _desk(factory, c);
         d.params = Params(
             factory.deploy(
                 1,
@@ -130,26 +107,56 @@ contract Deploy is Script {
                 abi.encodePacked(type(Params).creationCode, abi.encode(address(desk), c.heartbeatBps, c.heartbeatCap))
             )
         );
-        d.registry = GameRegistry(
-            factory.deploy(
-                1,
-                1,
-                abi.encodePacked(
-                    type(GameRegistry).creationCode,
-                    abi.encode(
-                        c.token,
-                        address(d.params),
-                        c.market,
-                        c.starterRoot,
-                        c.freeRoot,
-                        c.snapshotBlock,
-                        1_000_000_000 ether * c.endowmentBps / 10000,
-                        address(factory)
-                    )
-                )
-            )
-        );
+        d.registry = _registry(factory, c, address(d.params));
         desk.bind(address(d.registry), type(GameRegistry).creationCode, type(Params).creationCode, 1, 1, 1, 0);
+        address[14] memory modules = _modules(factory, address(d.registry));
+        d.pool = RewardPool(modules[0]);
+        d.rewards = FarmRewards(modules[1]);
+        d.farm = FarmCore(modules[2]);
+        d.items = FarmItems(modules[3]);
+        d.packs = PackSale(modules[4]);
+        d.starter = StarterClaim(modules[5]);
+        d.fees = FeeRouter(payable(modules[6]));
+        d.grid = GridOperator(modules[7]);
+        d.season = Season(modules[8]);
+        d.engine = FarmEngine(modules[9]);
+        d.economy = Economy(modules[10]);
+        d.enhancement = Enhancement(modules[11]);
+        d.civic = Civic(modules[12]);
+        d.billboards = Billboards(modules[13]);
+    }
+
+    function _endowment(Config memory c) private pure returns (uint256) {
+        return 1_000_000_000 ether * c.endowmentBps / 10000;
+    }
+
+    /// @dev v3.8: no launch coordinates at construction; the token is excluded (Desk precedes the token launch).
+    function _desk(LocalApplicationFactory factory, Config memory c) private returns (SwarmDesk) {
+        SwarmDesk.BindingConfig memory binding = SwarmDesk.BindingConfig(
+            address(factory),
+            0,
+            0,
+            0,
+            0,
+            keccak256(abi.encode(c.starterRoot, c.freeRoot, c.snapshotBlock, _endowment(c))),
+            c.heartbeatBps,
+            c.heartbeatCap
+        );
+        bytes memory args = SwarmArgs.encode(abi.decode(c.oracle, (SwarmDesk.OracleConfig)), binding);
+        return SwarmDesk(factory.deploy(3, 0, bytes.concat(vm.getCode("SwarmDesk.sol:SwarmDesk"), args)));
+    }
+
+    function _registry(LocalApplicationFactory factory, Config memory c, address params)
+        private
+        returns (GameRegistry)
+    {
+        bytes memory args = abi.encode(
+            c.token, params, c.market, c.starterRoot, c.freeRoot, c.snapshotBlock, _endowment(c), address(factory)
+        );
+        return GameRegistry(factory.deploy(1, 1, abi.encodePacked(type(GameRegistry).creationCode, args)));
+    }
+
+    function _modules(LocalApplicationFactory factory, address registry) private returns (address[14] memory modules) {
         string[14] memory names = [
             "RewardPool",
             "FarmRewards",
@@ -166,27 +173,12 @@ contract Deploy is Script {
             "Civic",
             "Billboards"
         ];
-        address[14] memory modules;
         for (uint256 i; i < 14; ++i) {
             bytes memory code = vm.getCode(string.concat(names[i], ".sol:", names[i]));
             uint64 launchNumber = i < 6 ? 1 : 2;
             uint256 index = i < 6 ? i + 2 : i - 6;
-            modules[i] = factory.deploy(launchNumber, index, abi.encodePacked(code, abi.encode(address(d.registry))));
-            assert(d.registry.register(i, launchNumber, index, code) == modules[i]);
+            modules[i] = factory.deploy(launchNumber, index, abi.encodePacked(code, abi.encode(registry)));
+            assert(GameRegistry(registry).register(i, launchNumber, index, code) == modules[i]);
         }
-        d.pool = RewardPool(modules[0]);
-        d.rewards = FarmRewards(modules[1]);
-        d.farm = FarmCore(modules[2]);
-        d.items = FarmItems(modules[3]);
-        d.packs = PackSale(modules[4]);
-        d.starter = StarterClaim(modules[5]);
-        d.fees = FeeRouter(payable(modules[6]));
-        d.grid = GridOperator(modules[7]);
-        d.season = Season(modules[8]);
-        d.engine = FarmEngine(modules[9]);
-        d.economy = Economy(modules[10]);
-        d.enhancement = Enhancement(modules[11]);
-        d.civic = Civic(modules[12]);
-        d.billboards = Billboards(modules[13]);
     }
 }

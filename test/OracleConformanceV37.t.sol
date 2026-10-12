@@ -13,14 +13,12 @@ contract SwarmVectorHarness is SwarmDesk {
             o.signer,
             o.asset,
             o.action,
-            o.maxPrice,
-            SwarmArgs.context(o),
+            SwarmArgs.policy(o, b),
             o.questions[0],
             o.questions[1],
             o.bodies[0],
             o.bodies[1],
             b.factory,
-            SwarmArgs.binding(b),
             b.gameConfigHash
         )
     {}

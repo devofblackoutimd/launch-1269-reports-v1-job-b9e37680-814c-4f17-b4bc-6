@@ -1,5 +1,5 @@
 [Unit]
-Description=BLACKOUT v3.6 keeper (epochs, entropy, system sells, reward/pot buys, seasons, billboards)
+Description=BLACKOUT v3.9 keeper (oracle relay, epochs, entropy, hook flush, system sells, reward/pot buys, seasons, fee claims)
 After=network-online.target
 Wants=network-online.target
 

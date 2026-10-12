@@ -7,8 +7,8 @@ import {V4Market} from "../../src/V4Market.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract TestV4Market is V4Market {
-    constructor(address manager_, address token_, address network_, address factory_, address desk_, bytes32 config_)
-        V4Market(manager_, token_, network_, 12500, 60, msg.sender, factory_, desk_, config_)
+    constructor(address manager_, address token_, address factory_, address desk_, bytes32 config_)
+        V4Market(manager_, token_, 12500, 60, msg.sender, factory_, desk_, config_)
     {}
     function _validateHookAddress() internal pure override {}
 
@@ -21,8 +21,8 @@ contract TestV4Market is V4Market {
 
 /// @dev Full v3.8 proof including the Desk binding, for adversarial tests.
 contract StrictTestV4Market is V4Market {
-    constructor(address manager_, address token_, address network_, address factory_, address desk_, bytes32 config_)
-        V4Market(manager_, token_, network_, 12500, 60, msg.sender, factory_, desk_, config_)
+    constructor(address manager_, address token_, address factory_, address desk_, bytes32 config_)
+        V4Market(manager_, token_, 12500, 60, msg.sender, factory_, desk_, config_)
     {}
     function _validateHookAddress() internal pure override {}
 }
@@ -87,14 +87,13 @@ contract IntegrationV4Market is V4Market {
     constructor(
         address manager_,
         address token_,
-        address network_,
         uint24 fee_,
         int24 spacing_,
         address launcher_,
         address factory_,
         address desk_,
         bytes32 config_
-    ) V4Market(manager_, token_, network_, fee_, spacing_, launcher_, factory_, desk_, config_) {}
+    ) V4Market(manager_, token_, fee_, spacing_, launcher_, factory_, desk_, config_) {}
 
     function _canonical(GameRegistry) internal pure override returns (bool) {
         return true;
@@ -105,14 +104,13 @@ contract IntegrationStandardMarket is StandardMarket {
     constructor(
         address manager_,
         address token_,
-        address network_,
         uint24 fee_,
         int24 spacing_,
         address launcher_,
         address factory_,
         address desk_,
         bytes32 config_
-    ) StandardMarket(manager_, token_, network_, fee_, spacing_, launcher_, factory_, desk_, config_) {}
+    ) StandardMarket(manager_, token_, fee_, spacing_, launcher_, factory_, desk_, config_) {}
 
     function _canonical(GameRegistry) internal pure override returns (bool) {
         return true;

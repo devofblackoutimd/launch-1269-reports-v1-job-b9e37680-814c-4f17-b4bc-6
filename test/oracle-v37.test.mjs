@@ -10,13 +10,17 @@ const config=JSON.parse(readFileSync('docs/oracle-v37/oracle-config.json','utf8'
 // Local encoder fixtures only: never a production launch configuration.
 const binding={factory:'0x1234567890123456789012345678901234567890',registryLaunch:'0',registryIndex:0,paramsLaunch:'0',paramsIndex:0,heartbeatBps:200,heartbeatCap:'1000000000000000000',gameConfigHash:keccak256(utf8('fixture'))};
 const constructorArgs=swarmConstructorArgs(config,binding);
-assert.equal(constructorArgs.length,14);assert.equal(constructorArgs.map(word).join('').length,14*64);
-const context=BigInt(constructorArgs[6]),bind=BigInt(constructorArgs[12]),mask=(1n<<64n)-1n;
-assert.equal(context&mask,1n);assert.equal((context>>64n)&mask,26122900n);assert.equal(context>>128n,26122901n);
-assert.equal(bind&mask,812n);assert.equal((bind>>64n)&255n,1n);assert.equal((bind>>72n)&mask,812n);assert.equal((bind>>136n)&255n,0n);assert.equal(bind>>144n,200n);
-assert.throws(()=>swarmConstructorArgs(config,{...binding,registryIndex:8}));
+assert.equal(constructorArgs.length,12);assert.equal(constructorArgs.map(word).join('').length,12*64);
+// v3.9 policy word: chainId[0:32] | fromBlock[32:80] | toBlock[80:128] | maxPrice[128:224] | heartbeatBps[224:240].
+const policy=BigInt(constructorArgs[5]),m32=(1n<<32n)-1n,m48=(1n<<48n)-1n,m96=(1n<<96n)-1n;
+assert.equal(policy&m32,1n);assert.equal((policy>>32n)&m48,26122900n);assert.equal((policy>>80n)&m48,26122901n);
+assert.equal((policy>>128n)&m96,500000000000000000n);assert.equal(policy>>224n,200n);
+assert.throws(()=>swarmConstructorArgs(config,{...binding,registryIndex:1}));
+assert.throws(()=>swarmConstructorArgs(config,{...binding,registryLaunch:'812'}));
 assert.throws(()=>swarmConstructorArgs(config,{...binding,heartbeatCap:'2'}));
-assert.throws(()=>swarmConstructorArgs({...config,questionChain:1n<<64n},binding));
+assert.throws(()=>swarmConstructorArgs(config,{...binding,heartbeatBps:199}));
+assert.throws(()=>swarmConstructorArgs({...config,questionChain:1n<<32n},binding));
+assert.throws(()=>swarmConstructorArgs({...config,maxPrice:'0'},binding));
 for(const [i,name]of ['event','regulator'].entries()) {
  const text=readFileSync(`docs/oracle-v37/${name}.json`,'utf8');const body=JSON.parse(text);
  assert.equal(oracleQuestionHash(body),config.questions[i]);assert.equal(keccak256(utf8(text)),config.bodies[i]);
@@ -34,4 +38,4 @@ for(const [i,name]of ['event','regulator'].entries()) {
 }
 assert.throws(()=>bytesCall('execute(uint8,bytes)',0,'0xzz'));
 assert.throws(()=>oracleQuestionHash({...vectors[0].body,window:{hours:6}}));
-console.log(`${vectors.length} independent protocol hash vectors; commitments, flat constructor packing, field limits, dynamic keeper ABI and log recovery passed.`);
+console.log(`${vectors.length} independent protocol hash vectors; commitments, twelve-word constructor packing, field limits, dynamic keeper ABI and log recovery passed.`);

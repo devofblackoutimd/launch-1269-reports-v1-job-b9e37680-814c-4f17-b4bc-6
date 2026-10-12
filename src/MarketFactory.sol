@@ -8,7 +8,6 @@ contract MarketFactory {
     struct Config {
         address manager;
         address token;
-        address networkRecipient;
         int24 tickSpacing;
         address launcher;
         address applicationFactory;
@@ -24,7 +23,6 @@ contract MarketFactory {
                 abi.encode(
                     c.manager,
                     c.token,
-                    c.networkRecipient,
                     uint24(12500),
                     c.tickSpacing,
                     c.launcher,
@@ -67,15 +65,7 @@ contract MarketFactory {
         if (uint160(target) & 0x3fff != 0x10cc) revert InvalidAddress();
         if (target.code.length != 0) return V4Market(payable(target));
         market = new V4Market{salt: salt}(
-            c.manager,
-            c.token,
-            c.networkRecipient,
-            12500,
-            c.tickSpacing,
-            c.launcher,
-            c.applicationFactory,
-            c.desk,
-            c.gameConfigHash
+            c.manager, c.token, 12500, c.tickSpacing, c.launcher, c.applicationFactory, c.desk, c.gameConfigHash
         );
         emit MarketDeployed(address(market), salt);
     }

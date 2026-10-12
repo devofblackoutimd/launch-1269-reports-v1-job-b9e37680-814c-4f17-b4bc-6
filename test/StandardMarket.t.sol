@@ -8,8 +8,8 @@ import {MockV4Manager} from "./mocks/MockV4Manager.sol";
 import {SwapParams} from "../src/interfaces/IV4.sol";
 
 contract TestStandardMarket is StandardMarket {
-    constructor(address m, address t, address n, address f, address k, bytes32 c)
-        StandardMarket(m, t, n, 12500, 60, msg.sender, f, k, c)
+    constructor(address m, address t, address f, address k, bytes32 c)
+        StandardMarket(m, t, 12500, 60, msg.sender, f, k, c)
     {}
     function _validateHookAddress() internal pure override {}
 
@@ -22,14 +22,12 @@ contract StandardMarketTest is BaseTest {
     TestStandardMarket private hook;
     MockV4Manager private manager;
     FeeRouter private fees;
-    address private network;
 
     function setUp() public override {
         super.setUp();
         manager = new MockV4Manager();
-        network = makeAddr("standard network");
         hook = new TestStandardMarket(
-            address(manager), address(token), network, address(bindingFactory), address(desk), bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         fees = canonicalFees(address(hook));
         vm.prank(team);
@@ -40,13 +38,12 @@ contract StandardMarketTest is BaseTest {
         vm.warp(launch + 60 minutes);
     }
 
-    function testStandardBuyOnePercentEvenSplitAndNetworkQuarterPercent() public {
+    function testStandardBuyOnePercentAllToRewards() public {
         (, int256 fee,) = manager.invokeBefore(hook, SwapParams(true, -int256(1 ether), 4295128740));
-        assertEq(uint256(fee >> 128), 0.0125 ether);
+        assertEq(uint256(fee >> 128), 0.01 ether);
         if (hook.heldBase() + hook.heldSellTax() != 0) hook.flushFees();
-        assertEq(fees.credit(team), 0.005 ether);
-        assertEq(fees.rewardETH(), 0.005 ether);
-        assertEq(hook.networkCredit(), 0.0025 ether);
+        assertEq(fees.credit(team), 0);
+        assertEq(fees.rewardETH(), 0.01 ether);
         assertEq(fees.heartbeatBalance(), 0);
     }
 
@@ -57,9 +54,10 @@ contract StandardMarketTest is BaseTest {
         manager.invokeBefore(hook, p);
         int256 delta = int256(output << 128) | int256(uint256(uint128(type(uint128).max - 1)));
         (, int128 fee) = manager.invokeAfter(hook, p, delta);
-        assertEq(uint256(uint128(fee)), output * 100 / 10000 + output * 25 / 10000);
+        assertEq(uint256(uint128(fee)), output * 100 / 10000);
         assertEq(fees.heartbeatBalance(), 0);
         if (hook.heldBase() + hook.heldSellTax() != 0) hook.flushFees();
-        assertEq(fees.credit(team), output * 100 / 10000 / 2);
+        assertEq(fees.credit(team), 0);
+        assertEq(fees.rewardETH(), output * 100 / 10000);
     }
 }

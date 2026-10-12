@@ -13,6 +13,8 @@ interface IApplicationFactory {
 }
 
 /// @notice No owner and no replacements. Enrollment proves canonical factory deployment of exact initcode.
+/// @dev v3.9: each role accepts the creation code of either pinned toolchain (the IMD verifier's build and
+/// the repository's build of the same source); see ModuleCode.
 contract GameRegistry is IGameRegistry {
     address public immutable token;
     address public immutable params;
@@ -66,9 +68,20 @@ contract GameRegistry is IGameRegistry {
         return modules[role];
     }
 
+    /// @notice The launch toolchain's pin (IMD verifier settings) for a role.
     function creationCodeHash(uint256 role) external pure returns (bytes32) {
         if (role >= 14) revert InvalidValue();
-        return ModuleCode.hash(role);
+        return ModuleCode.launchHash(role);
+    }
+
+    /// @notice Both pins for a role: the launch toolchain's and the repository toolchain's.
+    function creationCodeHashes(uint256 role) external pure returns (bytes32 launch, bytes32 repo) {
+        if (role >= 14) revert InvalidValue();
+        return (ModuleCode.launchHash(role), ModuleCode.repoHash(role));
+    }
+
+    function acceptsCreationCode(uint256 role, bytes32 codeHash) external pure returns (bool) {
+        return role < 14 && ModuleCode.matches(role, codeHash);
     }
 
     /// @dev Runtime hash alone cannot prove safe initial storage. CREATE2 over exact initcode can.
@@ -76,7 +89,7 @@ contract GameRegistry is IGameRegistry {
         external
         returns (address deployed)
     {
-        if (role >= 14 || index >= 8 || launchNumber == 0 || keccak256(creationCode) != ModuleCode.hash(role)) {
+        if (role >= 14 || index >= 8 || launchNumber == 0 || !ModuleCode.matches(role, keccak256(creationCode))) {
             revert InvalidValue();
         }
         if (modules[role] != address(0)) revert AlreadyDone();

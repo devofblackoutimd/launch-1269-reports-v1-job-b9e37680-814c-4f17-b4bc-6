@@ -10,14 +10,12 @@ import "../src/lib/Errors.sol";
 contract MarketTest is BaseTest {
     MockV4Manager internal manager;
     TestV4Market internal hook;
-    address internal network;
 
     function setUp() public override {
         super.setUp();
         manager = new MockV4Manager();
-        network = makeAddr("network recipient");
         hook = new TestV4Market(
-            address(manager), address(token), network, address(bindingFactory), address(desk), bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         d.fees = canonicalFees(address(hook));
         vm.prank(team);
@@ -39,13 +37,13 @@ contract MarketTest is BaseTest {
         vm.expectRevert(NotConfigured.selector);
         hook.quote(1 ether);
         vm.warp(launch + 31 minutes);
-        assertEq(hook.quote(1 ether), 0.9775 ether);
+        assertEq(hook.quote(1 ether), 0.99 ether);
         manager.setSqrt(uint160(2 << 96));
         sell(5 ether);
-        assertEq(hook.quote(1 ether), 0.9775 ether);
+        assertEq(hook.quote(1 ether), 0.99 ether);
         assertEq(hook.lastPrice(), 4 ether);
         vm.warp(vm.getBlockTimestamp() + 31 minutes);
-        assertEq(hook.quote(1 ether), 3.91 ether);
+        assertEq(hook.quote(1 ether), 3.96 ether);
     }
 
     function testSingleDumpIncludesItselfAndFeeDecaysWithoutGriefReset() public {
@@ -63,7 +61,7 @@ contract MarketTest is BaseTest {
         assertLt(hook.storedFeeWad(), peak);
         vm.warp(vm.getBlockTimestamp() + 25 hours);
         sell(1);
-        assertLe(hook.storedFeeWad(), 201 ether);
+        assertLe(hook.storedFeeWad(), 101 ether);
     }
 
     function testTwapAveragesEthPriceAcrossUnequalPrices() public {
@@ -75,8 +73,8 @@ contract MarketTest is BaseTest {
         manager.setSqrt(uint160(1 << 96));
         sell(1 ether);
         vm.warp(start + 30 minutes);
-        // Fifteen minutes at 0.25 ETH/token and fifteen at 1 ETH/token average 0.625.
-        assertEq(hook.quote(1 ether), 1.564 ether);
+        // Fifteen minutes at 0.25 ETH/token and fifteen at 1 ETH/token average 0.625; 1% hook share.
+        assertEq(hook.quote(1 ether), 1.584 ether);
     }
 
     function testOnlyManagerCorrectPoolExactInputAndHookAddress() public {
@@ -93,7 +91,6 @@ contract MarketTest is BaseTest {
         new V4Market(
             address(manager),
             address(token),
-            network,
             12500,
             60,
             address(this),
@@ -103,17 +100,23 @@ contract MarketTest is BaseTest {
         );
     }
 
-    function testBuyChargesOnlyBaseAndNetworkPullPayment() public {
+    /// @dev v3.9: after the launch window a buy pays exactly 1% to the hook, all of it to reward buys.
+    function testBuyChargesExactlyOnePercentAllToRewards() public {
         vm.warp(hook.initializedAt() + 60 minutes);
         SwapParams memory p = SwapParams(true, -int256(1 ether), 4295128740);
         (, int256 delta,) = manager.invokeBefore(hook, p);
-        assertEq(uint256(delta >> 128), 0.0225 ether);
-        assertEq(hook.networkCredit(), 0.0025 ether);
+        assertEq(uint256(delta >> 128), 0.01 ether);
+        assertEq(hook.heldBase(), 0.01 ether);
+        assertEq(address(hook).balance, 0.01 ether);
         hook.flushFees();
-        assertEq(d.fees.credit(team), 0.01 ether);
-        hook.withdrawNetwork();
-        assertEq(network.balance, 0.0025 ether);
-        assertEq(hook.networkCredit(), 0);
+        assertEq(d.fees.rewardETH(), 0.01 ether);
+        assertEq(d.fees.credit(team), 0);
+        assertEq(d.fees.heartbeatBalance(), 0);
+        assertEq(address(hook).balance, 0);
+        (bool ok,) = address(hook).call(abi.encodeWithSignature("withdrawNetwork()"));
+        assertFalse(ok, "no network share remains in the hook");
+        (ok,) = address(hook).call(abi.encodeWithSignature("networkCredit()"));
+        assertFalse(ok);
     }
 
     function testFuzzTotalFeeHardCap(uint96 amount) public {
@@ -122,6 +125,6 @@ contract MarketTest is BaseTest {
         manager.setSqrt(uint160(4 << 96));
         uint256 paid = sell(output);
         assertLe(paid, output * 1500 / 10000);
-        assertLe(hook.storedFeeWad(), 1475 ether);
+        assertLe(hook.storedFeeWad(), 1500 ether);
     }
 }

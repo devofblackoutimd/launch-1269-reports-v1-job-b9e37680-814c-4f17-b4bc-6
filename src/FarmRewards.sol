@@ -86,7 +86,8 @@ contract FarmRewards is GameModule, ReentrancyGuard {
     mapping(uint256 => uint256) public activeFarmCount;
     uint256 public constant MAX_OUTPUT_BPS = 15000;
     uint256 public scrapAllowance;
-    mapping(uint256 => Epoch) public epochs;
+    /// @dev Read through `epochData`: a 21-field public getter does not compile without via-IR.
+    mapping(uint256 => Epoch) private epochs;
     mapping(uint256 => mapping(uint256 => uint256)) public epochParam;
     mapping(uint256 => mapping(address => Share)) public shares;
     uint256 public nextTotalHash;
@@ -370,62 +371,83 @@ contract FarmRewards is GameModule, ReentrancyGuard {
                 productive = limit;
             }
         }
-        shares[id][p] = Share(raw, productive, power, audit);
+        Share memory sh = Share(raw, productive, power, audit);
+        shares[id][p] = sh;
         uint256 week = (e.start - launchTime()) / 7 days;
-        if (weight != 0) {
-            uint256 gross = Math.mulDiv(e.rewardPerHash, productive, PRECISION);
-            uint256 electricity = Math.mulDiv(e.rewardPerHash, power, PRECISION) * e.tariff / 10000;
-            if (e.kind == GridOperator.Kind.Cheap && uint256(keccak256(abi.encodePacked(p))) % 8 == e.district) {
-                electricity /= 2;
-            }
-            uint256 tax = audit ? gross / 10 : 0;
-            uint256 net = gross - tax - Math.min(electricity, gross - tax);
-            uint256 redisAllocation = Math.mulDiv(e.redis, weight, e.raw);
-            uint256 redis = Math.mulDiv(e.redis, Math.min(productive, weight), e.raw);
-            Account storage a = accounts[p];
-            a.referralClosed = true;
-            uint256 referral;
-            if (a.referrer != address(0)) {
-                referral = gross * 500 / 10000;
-                _credit(a.referrer, referral, id, e.end);
-            }
-            // Use the same rounding as actual gross. Flooring a global envelope before
-            // apportionment can otherwise underfund a farm by one wei and lock its cursor.
-            uint256 maxGross = Math.mulDiv(e.rewardPerHash, weight * MAX_OUTPUT_BPS / 10000, PRECISION);
-            uint256 allocation = maxGross + maxGross * 500 / 10000 + redisAllocation;
-            uint256 spent = net + redis + referral;
-            // Protocol maximum district/event boosts bound productive hash by 150% of committed allocation hash.
-            if (spent > allocation) revert InvalidValue();
-            _credit(p, net + redis, id, e.end);
-            lastFarmDaily[p] = net * 4;
-            core().autoRepair(p, id);
-            e.spent += spent;
-            e.allocated += allocation;
-            e.settledHash += weight;
-            uint256 unused = allocation - spent;
-            if (id == settledEpoch) {
-                uint256 allowance = Math.min(unused, e.mining / 6 - e.scrap);
-                e.scrap += allowance;
-                scrapAllowance += allowance;
-                unused -= allowance;
-            }
-            if (unused != 0) pool().recycle(unused);
-            if (e.settledHash == e.raw) {
-                uint256 dust = e.budget + e.redis - e.allocated;
-                if (dust != 0) pool().recycle(dust);
-                emit EpochSettled(id, e.spent, dust);
-            }
-            if (raw != 0) {
-                core().activity(p, id, gross, net);
-                if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(e.seed, p, "supply"))) % 10000 < 500) {
-                    core().grantDrop(p, keccak256(abi.encode(e.seed, p, "item")));
-                }
-                season().recordActivity(p, week, gross, weight);
-            }
-        }
+        if (weight != 0) _reward(p, id, sh, weight, week);
         // Only a complete week's yield may compete for spend/yield prizes; partial settlement cannot win.
         if (id == lastEpochInWeek[week] && epochs[epoch].start >= launchTime() + (week + 1) * 7 days) {
             season().complete(p, week);
+        }
+    }
+
+    struct Payout {
+        uint256 gross;
+        uint256 net;
+        uint256 redis;
+        uint256 referral;
+        uint256 allocation;
+    }
+
+    function _payout(address p, Epoch storage e, Share memory sh, uint256 weight)
+        private
+        view
+        returns (Payout memory o)
+    {
+        o.gross = Math.mulDiv(e.rewardPerHash, sh.productive, PRECISION);
+        uint256 electricity = Math.mulDiv(e.rewardPerHash, sh.power, PRECISION) * e.tariff / 10000;
+        if (e.kind == GridOperator.Kind.Cheap && uint256(keccak256(abi.encodePacked(p))) % 8 == e.district) {
+            electricity /= 2;
+        }
+        uint256 tax = sh.audit ? o.gross / 10 : 0;
+        o.net = o.gross - tax - Math.min(electricity, o.gross - tax);
+        o.redis = Math.mulDiv(e.redis, Math.min(sh.productive, weight), e.raw);
+        // Use the same rounding as actual gross. Flooring a global envelope before
+        // apportionment can otherwise underfund a farm by one wei and lock its cursor.
+        uint256 maxGross = Math.mulDiv(e.rewardPerHash, weight * MAX_OUTPUT_BPS / 10000, PRECISION);
+        o.allocation = maxGross + maxGross * 500 / 10000 + Math.mulDiv(e.redis, weight, e.raw);
+    }
+
+    function _reward(address p, uint256 id, Share memory sh, uint256 weight, uint256 week) private {
+        Epoch storage e = epochs[id];
+        Payout memory o = _payout(p, e, sh, weight);
+        Account storage a = accounts[p];
+        a.referralClosed = true;
+        if (a.referrer != address(0)) {
+            o.referral = o.gross * 500 / 10000;
+            _credit(a.referrer, o.referral, id, e.end);
+        }
+        uint256 spent = o.net + o.redis + o.referral;
+        // Protocol maximum district/event boosts bound productive hash by 150% of committed allocation hash.
+        if (spent > o.allocation) revert InvalidValue();
+        _credit(p, o.net + o.redis, id, e.end);
+        lastFarmDaily[p] = o.net * 4;
+        core().autoRepair(p, id);
+        e.spent += spent;
+        e.allocated += o.allocation;
+        e.settledHash += weight;
+        _recycle(e, id, o.allocation - spent);
+        if (sh.raw != 0) {
+            core().activity(p, id, o.gross, o.net);
+            if (e.sales >= 2 * e.target && uint256(keccak256(abi.encode(e.seed, p, "supply"))) % 10000 < 500) {
+                core().grantDrop(p, keccak256(abi.encode(e.seed, p, "item")));
+            }
+            season().recordActivity(p, week, o.gross, weight);
+        }
+    }
+
+    function _recycle(Epoch storage e, uint256 id, uint256 unused) private {
+        if (id == settledEpoch) {
+            uint256 allowance = Math.min(unused, e.mining / 6 - e.scrap);
+            e.scrap += allowance;
+            scrapAllowance += allowance;
+            unused -= allowance;
+        }
+        if (unused != 0) pool().recycle(unused);
+        if (e.settledHash == e.raw) {
+            uint256 dust = e.budget + e.redis - e.allocated;
+            if (dust != 0) pool().recycle(dust);
+            emit EpochSettled(id, e.spent, dust);
         }
     }
 

@@ -29,14 +29,12 @@ contract RejectingHookRouter {
 contract HookBindingTest is BaseTest {
     TestV4Market private hook;
     MockV4Manager private manager;
-    address private network;
 
     function setUp() public override {
         super.setUp();
         manager = new MockV4Manager();
-        network = makeAddr("network");
         hook = new TestV4Market(
-            address(manager), address(token), network, address(bindingFactory), address(desk), bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         vm.deal(address(manager), 100 ether);
         manager.initializeHook(hook);
@@ -60,10 +58,9 @@ contract HookBindingTest is BaseTest {
         assertEq(address(hook.params()), address(0));
         uint256 base = hook.heldBase();
         uint256 surcharge = hook.heldSellTax();
-        uint256 networkDue = hook.networkCredit();
-        assertEq(base, 0.04 ether);
+        assertEq(base, 0.02 ether); // 1% of the 1 ETH buy and 1% of the 1 ETH sell output
         assertGt(surcharge, 0);
-        assertEq(address(hook).balance, base + surcharge + networkDue);
+        assertEq(address(hook).balance, base + surcharge);
         vm.expectRevert(NotConfigured.selector);
         hook.flushFees();
         FeeRouter f = canonicalFees(address(hook));
@@ -78,16 +75,14 @@ contract HookBindingTest is BaseTest {
         hook.flushFees();
         assertEq(hook.heldBase(), 0);
         assertEq(hook.heldSellTax(), 0);
-        assertEq(f.credit(team), base / 2 + surcharge * 1000 / 10000);
+        assertEq(f.credit(team), surcharge * 1000 / 10000, "team gets nothing from the base stream");
         assertEq(f.heartbeatBalance(), surcharge * 200 / 10000);
         assertEq(f.credit(team) + f.heartbeatBalance() + f.rewardETH() + f.potETH(), base + surcharge);
-        assertEq(address(hook).balance, networkDue);
-        hook.withdrawNetwork();
-        assertEq(network.balance, networkDue);
+        assertEq(address(hook).balance, 0);
         vm.expectRevert(InsufficientBalance.selector);
         hook.flushFees();
         _buy();
-        assertEq(hook.heldBase(), 0.02 ether);
+        assertEq(hook.heldBase(), 0.01 ether);
         hook.flushFees();
     }
 
@@ -111,8 +106,8 @@ contract HookBindingTest is BaseTest {
         vm.prank(team);
         bindHook(hook, address(f));
         assertEq(address(hook.fees()), address(0));
-        assertEq(hook.heldBase(), 0.02 ether);
+        assertEq(hook.heldBase(), 0.01 ether);
         _buy();
-        assertEq(hook.heldBase(), 0.04 ether);
+        assertEq(hook.heldBase(), 0.02 ether);
     }
 }

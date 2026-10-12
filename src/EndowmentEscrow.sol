@@ -36,7 +36,8 @@ interface IEscrowParams {
 /// forward the whole balance of the canonical game's token to its authenticated RewardPool, once.
 /// @dev Deployed after the SwarmDesk bootstrap and before the token launch, so it needs no launch
 /// number: the canonical game is the one the pinned Desk bound to, proven at forward time with the
-/// ProjectFactory's CREATE2 prediction, its launch record and the pinned Registry/RewardPool code.
+/// ProjectFactory's CREATE2 prediction, its launch record and the pinned Registry/RewardPool code
+/// (either toolchain pin, see ModuleCode).
 contract EndowmentEscrow is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -69,7 +70,7 @@ contract EndowmentEscrow is ReentrancyGuard {
     ) external nonReentrant returns (uint256 amount) {
         if (forwarded) revert AlreadyDone();
         if (registryLaunch == 0 || registryIndex >= 8 || poolLaunch == 0 || poolIndex >= 8) revert InvalidValue();
-        if (keccak256(registryCode) != SwarmCode.REGISTRY || keccak256(poolCode) != ModuleCode.hash(0)) {
+        if (!SwarmCode.isRegistry(keccak256(registryCode)) || !ModuleCode.matches(0, keccak256(poolCode))) {
             revert InvalidProof();
         }
         if (IEscrowDesk(desk).registry() != registry) revert InvalidProof();
@@ -78,24 +79,34 @@ contract EndowmentEscrow is ReentrancyGuard {
         if (!IEscrowRecords(records).isRecorded(registryLaunch) || !IEscrowRecords(records).isRecorded(poolLaunch)) {
             revert InvalidProof();
         }
-        bytes memory args = abi.encode(
-            r.token(), r.params(), r.market(), r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment(), factory
-        );
-        if (
-            IEscrowFactory(factory).predictContract(registryLaunch, registryIndex, bytes.concat(registryCode, args))
-                != registry
-        ) revert InvalidProof();
-        address pool = r.module(0);
-        if (
-            pool.code.length == 0
-                || IEscrowFactory(factory)
-                        .predictContract(poolLaunch, poolIndex, bytes.concat(poolCode, abi.encode(registry))) != pool
-        ) revert InvalidProof();
+        _proveRegistry(r, registryLaunch, registryIndex, registryCode);
+        address pool = _provePool(registry, poolLaunch, poolIndex, poolCode);
         IERC20 token = IERC20(r.token());
         amount = token.balanceOf(address(this));
         if (amount == 0) revert InsufficientBalance();
         forwarded = true;
         token.safeTransfer(pool, amount);
         emit Forwarded(registry, pool, address(token), amount);
+    }
+
+    function _proveRegistry(IEscrowRegistry r, uint64 launch, uint256 index, bytes calldata code) private view {
+        bytes memory args = abi.encode(
+            r.token(), r.params(), r.market(), r.starterRoot(), r.freeRoot(), r.snapshotBlock(), r.endowment(), factory
+        );
+        if (IEscrowFactory(factory).predictContract(launch, index, bytes.concat(code, args)) != address(r)) {
+            revert InvalidProof();
+        }
+    }
+
+    function _provePool(address registry, uint64 launch, uint256 index, bytes calldata code)
+        private
+        view
+        returns (address pool)
+    {
+        pool = IEscrowRegistry(registry).module(0);
+        bytes memory initCode = bytes.concat(code, abi.encode(registry));
+        if (pool.code.length == 0 || IEscrowFactory(factory).predictContract(launch, index, initCode) != pool) {
+            revert InvalidProof();
+        }
     }
 }

@@ -25,10 +25,23 @@ contract RegistryTest is BaseTest {
             "Civic",
             "Billboards"
         ];
+        // v3.9: two toolchain pins per role. This build matches exactly one of them for every role, never a mix.
+        uint256 launchMatches;
+        uint256 repoMatches;
         for (uint256 i; i < 14; ++i) {
             assertLe(d.registry.module(i).code.length, 24576, "runtime must fit EIP-170");
-            assertEq(d.registry.creationCodeHash(i), keccak256(vm.getCode(string.concat(names[i], ".sol:", names[i]))));
+            bytes32 built = keccak256(vm.getCode(string.concat(names[i], ".sol:", names[i])));
+            assertTrue(d.registry.acceptsCreationCode(i, built), "pin must accept this build");
+            (bytes32 launchPin, bytes32 repoPin) = d.registry.creationCodeHashes(i);
+            assertEq(d.registry.creationCodeHash(i), launchPin);
+            assertTrue(launchPin != bytes32(0) && repoPin != bytes32(0) && launchPin != repoPin, "distinct pins");
+            if (built == launchPin) launchMatches++;
+            if (built == repoPin) repoMatches++;
+            assertFalse(d.registry.acceptsCreationCode(i, keccak256(abi.encodePacked(built))));
         }
+        assertTrue(launchMatches == 14 || repoMatches == 14, "one toolchain for all fourteen modules");
+        assertFalse(d.registry.acceptsCreationCode(14, keccak256(vm.getCode("RewardPool.sol:RewardPool"))));
+        assertFalse(d.registry.acceptsCreationCode(0, bytes32(0)));
         assertEq(d.registry.registered(), 14);
         assertEq(address(d.rewards.registry()), address(d.registry));
         assertEq(address(d.pool.registry()), address(d.registry));

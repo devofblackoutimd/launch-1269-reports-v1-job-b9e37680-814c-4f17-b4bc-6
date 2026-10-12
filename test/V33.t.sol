@@ -395,7 +395,7 @@ contract V33Test is BaseTest {
         assertEq(d.fees.rewardETH() - r0, 1.14 ether);
     }
 
-    function testHeartbeatCapExcessGoesToPoolAndBaseFeeStaysHalf() public {
+    function testHeartbeatCapExcessGoesToPoolAndBaseFeeIsAllRewards() public {
         vm.deal(address(d.packs), 200 ether);
         uint256 team0 = d.fees.credit(team);
         uint256 r0 = d.fees.rewardETH();
@@ -406,8 +406,8 @@ contract V33Test is BaseTest {
         assertEq(d.fees.credit(team) - team0, 10 ether);
         assertEq(d.fees.rewardETH() - r0, 50 ether - 10 ether - (1 ether - h0));
         d.fees.depositBaseFee{value: 1 ether}();
-        assertEq(d.fees.credit(team) - team0, 10.5 ether);
-        assertEq(d.fees.rewardETH() - r0, 40.5 ether - (1 ether - h0));
+        assertEq(d.fees.credit(team) - team0, 10 ether, "v3.9: no team half of the base fee");
+        assertEq(d.fees.rewardETH() - r0, 41 ether - (1 ether - h0));
     }
 
     function testLaunchTaxDepositIsAllPoolAndMarketOnly() public {
@@ -464,12 +464,7 @@ contract LaunchProtectionTest is BaseTest {
         super.setUp();
         manager = new MockV4Manager();
         hook = new TestV4Market(
-            address(manager),
-            address(token),
-            makeAddr("network recipient"),
-            address(bindingFactory),
-            address(desk),
-            bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         d.fees = canonicalFees(address(hook));
         vm.prank(team);
@@ -487,7 +482,7 @@ contract LaunchProtectionTest is BaseTest {
 
     function testViewsBeforeInitialization() public {
         TestV4Market fresh = new TestV4Market(
-            address(manager), address(token), makeAddr("n"), address(bindingFactory), address(desk), bindingConfigHash()
+            address(manager), address(token), address(bindingFactory), address(desk), bindingConfigHash()
         );
         assertEq(fresh.currentBuyTaxBps(), 9000);
         assertEq(fresh.launchTaxTimeLeft(), 30 minutes);
@@ -503,12 +498,12 @@ contract LaunchProtectionTest is BaseTest {
         vm.warp(t0 + 29 minutes);
         assertEq(hook.currentBuyTaxBps(), 2500);
         vm.warp(t0 + 30 minutes);
-        assertEq(hook.currentBuyTaxBps(), 225);
+        assertEq(hook.currentBuyTaxBps(), 100);
         assertEq(hook.launchTaxTimeLeft(), 0);
         vm.warp(t0 + 10 days);
-        assertEq(hook.currentBuyTaxBps(), 225);
+        assertEq(hook.currentBuyTaxBps(), 100);
         (uint256 bps, uint256 left, uint256 mb, uint256 mbl) = hook.launchStatus();
-        assertEq(bps, 225);
+        assertEq(bps, 100);
         assertEq(left, 0);
         assertEq(mb, type(uint256).max);
         assertEq(mbl, 0);
@@ -518,13 +513,12 @@ contract LaunchProtectionTest is BaseTest {
         uint256 fee = buyFee(0.5 ether);
         assertEq(fee, 0.45 ether);
         assertEq(hook.heldBase(), 0);
-        assertEq(hook.networkCredit(), 0);
         assertEq(hook.heldLaunchTax(), 0.45 ether);
         uint256 team0 = d.fees.credit(team);
         uint256 r0 = d.fees.rewardETH();
         hook.flushFees();
         assertEq(hook.heldLaunchTax(), 0);
-        // Base fee splits 1%/1%; every launch-tax wei goes to reward buys.
+        // The 1% base is reward buys as well; every launch-tax wei goes to reward buys.
         assertEq(d.fees.credit(team) - team0, 0);
         assertEq(d.fees.rewardETH() - r0, 0.45 ether);
     }
@@ -532,7 +526,7 @@ contract LaunchProtectionTest is BaseTest {
     function testNormalBuyAfterDecayHasNoLaunchTax() public {
         vm.warp(t0 + 30 minutes);
         uint256 fee = buyFee(0.3 ether);
-        assertEq(fee, 0.3 ether * 225 / 10000);
+        assertEq(fee, 0.3 ether * 100 / 10000);
         assertEq(hook.heldLaunchTax(), 0);
     }
 
@@ -553,7 +547,7 @@ contract LaunchProtectionTest is BaseTest {
         vm.warp(t0 + 25 minutes);
         assertEq(buyFee(5 ether), 1.25 ether);
         vm.warp(t0 + 30 minutes);
-        assertEq(buyFee(5 ether), 0.1125 ether);
+        assertEq(buyFee(5 ether), 0.05 ether);
     }
 
     function testSnipersSplittingBuysStillPayTheCurve() public {
