@@ -80,46 +80,73 @@ contract LazyAccountingTest is DeferredEntryTest {
         s.power = s.productive * (10000 - savings) / 10000;
     }
 
+    /// @dev Per-event flags of the reference model, grouped so the model compiles without via-IR.
+    struct Ev {
+        uint256 word;
+        bool local;
+        bool surge;
+        uint256 mask;
+        uint256 target;
+    }
+
     function _eager(RefFarm memory f, address p, uint256 e, FarmRewards.Epoch memory snap)
         private
         pure
         returns (RefFarm memory, Stats memory before_, Stats memory after_)
     {
         before_ = _stats(f, e);
-        uint256 word = uint256(keccak256(abi.encode(snap.seed, p)));
-        bool local = uint256(keccak256(abi.encodePacked(p))) % 8 == snap.district;
-        uint256 mask = before_.mask;
-        bool surge =
-            local && snap.kind == GridOperator.Kind.Surge && word % 10000 < 1000 * uint256(snap.severity) / 10000;
+        Ev memory v;
+        v.word = uint256(keccak256(abi.encode(snap.seed, p)));
+        v.local = uint256(keccak256(abi.encodePacked(p))) % 8 == snap.district;
+        v.mask = before_.mask;
+        v.surge =
+            v.local && snap.kind == GridOperator.Kind.Surge && v.word % 10000 < 1000 * uint256(snap.severity) / 10000;
         bool theft =
-            local && snap.kind == GridOperator.Kind.Theft && word % 10000 < 2000 * uint256(snap.severity) / 10000;
+            v.local && snap.kind == GridOperator.Kind.Theft && v.word % 10000 < 2000 * uint256(snap.severity) / 10000;
         uint256 occupied;
         for (uint256 i; i < 6; ++i) {
             if (!f.item[i].destroyed) occupied++;
         }
-        uint256 target = occupied == 0 ? type(uint256).max : (word >> 64) % occupied;
-        if (theft && mask & 1280 != 1280) f.theftUntil = e + 2;
+        v.target = occupied == 0 ? type(uint256).max : (v.word >> 64) % occupied;
+        if (theft && v.mask & 1280 != 1280) f.theftUntil = e + 2;
+        _damage(f, v, snap);
+        after_ = _stats(f, e);
+        _settleRef(f, v, snap, before_, after_);
+        return (f, before_, after_);
+    }
+
+    function _damage(RefFarm memory f, Ev memory v, FarmRewards.Epoch memory snap) private pure {
         uint256 cursor;
         for (uint256 i; i < 6; ++i) {
             RefItem memory x = f.item[i];
             if (x.destroyed) continue;
             uint256 damage;
-            if (surge && cursor == target && mask & 2056 != 2056) {
-                if ((word >> 128) % 100 < 2 && x.rarity < 3) {
+            if (v.surge && cursor == v.target && v.mask & 2056 != 2056) {
+                if ((v.word >> 128) % 100 < 2 && x.rarity < 3) {
                     f.item[i].destroyed = true;
                     cursor++;
                     continue;
                 }
                 damage = 5000;
             }
-            if (local && snap.kind == GridOperator.Kind.Fire && mask & 136 != 136) {
-                damage += 3000 * uint256(snap.severity) / 10000 / (mask & 1088 == 1088 ? 2 : 1);
+            if (v.local && snap.kind == GridOperator.Kind.Fire && v.mask & 136 != 136) {
+                damage += 3000 * uint256(snap.severity) / 10000 / (v.mask & 1088 == 1088 ? 2 : 1);
             }
             f.item[i].health = uint16(x.health > damage ? x.health - damage : 0);
             cursor++;
         }
-        after_ = _stats(f, e);
-        if (local && snap.kind == GridOperator.Kind.Outage && word % 10000 < 3000 * uint256(snap.severity) / 10000) {
+    }
+
+    function _settleRef(
+        RefFarm memory f,
+        Ev memory v,
+        FarmRewards.Epoch memory snap,
+        Stats memory before_,
+        Stats memory after_
+    ) private pure {
+        bool local = v.local;
+        uint256 mask = v.mask;
+        if (local && snap.kind == GridOperator.Kind.Outage && v.word % 10000 < 3000 * uint256(snap.severity) / 10000) {
             after_.productive = mask & 48 == 48 ? after_.productive / 2 : 0;
             after_.power = mask & 48 == 48 ? after_.power / 2 : 0;
         }
@@ -142,7 +169,6 @@ contract LazyAccountingTest is DeferredEntryTest {
                 f.item[i].health = health > 100 ? health - 100 : 0;
             }
         }
-        return (f, before_, after_);
     }
 
     function _closeOnly() private {

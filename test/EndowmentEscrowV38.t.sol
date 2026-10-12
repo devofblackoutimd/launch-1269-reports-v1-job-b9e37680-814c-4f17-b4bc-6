@@ -8,6 +8,7 @@ import {Params} from "../src/Params.sol";
 import {LocalApplicationFactory} from "../script/Deploy.s.sol";
 import {SwarmDesk} from "../src/SwarmDesk.sol";
 import {SwarmArgs} from "../script/SwarmArgs.sol";
+import {MockToken} from "./mocks/MockToken.sol";
 import "../src/lib/Errors.sol";
 
 /// @dev v3.8: the token launch's remainderTo is an ownerless escrow deployed before the token; it forwards
@@ -59,52 +60,9 @@ contract EndowmentEscrowV38Test is BaseTest {
 
     function testForwardWithRealEndowmentActivatesDrip() public {
         // A registry with a 20% endowment, bound to a fresh Desk, at fresh coordinates of the fixture factory.
-        LocalApplicationFactory f = LocalApplicationFactory(address(d.registry.factory()));
-        bytes memory deskCode = vm.getCode("SwarmDesk.sol:SwarmDesk");
         uint256 endowment = 200_000_000 ether;
-        bytes32 configHash = keccak256(
-            abi.encode(d.registry.starterRoot(), d.registry.freeRoot(), d.registry.snapshotBlock(), endowment)
-        );
-        bytes memory words = _deskWords(address(f), configHash);
-        address fresh = f.deploy(20, 0, bytes.concat(deskCode, words));
-        Params p = Params(
-            f.deploy(21, 0, bytes.concat(type(Params).creationCode, abi.encode(fresh, uint256(200), uint256(1 ether))))
-        );
-        GameRegistry r = GameRegistry(
-            f.deploy(
-                21,
-                1,
-                bytes.concat(
-                    registryCode,
-                    abi.encode(
-                        address(token),
-                        address(p),
-                        address(market),
-                        d.registry.starterRoot(),
-                        d.registry.freeRoot(),
-                        d.registry.snapshotBlock(),
-                        endowment,
-                        address(f)
-                    )
-                )
-            )
-        );
-        RewardPool pool = RewardPool(f.deploy(22, 0, bytes.concat(poolCode, abi.encode(address(r)))));
-        r.register(0, 22, 0, poolCode);
-        (bool ok,) = fresh.call(
-            abi.encodeWithSignature(
-                "bind(address,bytes,bytes,uint64,uint8,uint64,uint8)",
-                address(r),
-                registryCode,
-                type(Params).creationCode,
-                uint64(21),
-                uint8(1),
-                uint64(21),
-                uint8(0)
-            )
-        );
-        assertTrue(ok, "bind");
-        EndowmentEscrow e = new EndowmentEscrow(address(f), address(f), fresh);
+        (address fresh, GameRegistry r, RewardPool pool) = _freshGame(endowment, address(token));
+        EndowmentEscrow e = new EndowmentEscrow(address(r.factory()), address(r.factory()), fresh);
         token.transfer(address(e), endowment);
         // The fixture registry is not the one this Desk bound to.
         vm.expectRevert(InvalidProof.selector);
@@ -119,6 +77,75 @@ contract EndowmentEscrowV38Test is BaseTest {
         assertEq(pool.lockedEndowment(), endowment);
         vm.warp(block.timestamp + 21 days);
         assertEq(pool.lockedEndowment(), endowment / 2);
+    }
+
+    /// @dev Launches Desk (20/0), Params (21/0), Registry (21/1) and RewardPool (22/0) through the fixture factory
+    /// and binds the Desk. Split into helpers so the test compiles without via-IR (IMD verifier settings).
+    function _freshGame(uint256 endowment, address gameToken)
+        private
+        returns (address fresh, GameRegistry r, RewardPool pool)
+    {
+        LocalApplicationFactory f = LocalApplicationFactory(address(d.registry.factory()));
+        bytes32 configHash = keccak256(
+            abi.encode(d.registry.starterRoot(), d.registry.freeRoot(), d.registry.snapshotBlock(), endowment)
+        );
+        fresh = f.deploy(20, 0, bytes.concat(vm.getCode("SwarmDesk.sol:SwarmDesk"), _deskWords(address(f), configHash)));
+        Params p = Params(
+            f.deploy(21, 0, bytes.concat(type(Params).creationCode, abi.encode(fresh, uint256(200), uint256(1 ether))))
+        );
+        r = GameRegistry(
+            f.deploy(21, 1, bytes.concat(registryCode, _registryArgs(gameToken, address(p), endowment, address(f))))
+        );
+        pool = RewardPool(f.deploy(22, 0, bytes.concat(poolCode, abi.encode(address(r)))));
+        r.register(0, 22, 0, poolCode);
+        (bool ok,) = fresh.call(
+            abi.encodeWithSignature(
+                "bind(address,bytes,bytes,uint64,uint8,uint64,uint8)",
+                address(r),
+                registryCode,
+                type(Params).creationCode,
+                uint64(21),
+                uint8(1),
+                uint64(21),
+                uint8(0)
+            )
+        );
+        assertTrue(ok, "bind");
+    }
+
+    function _registryArgs(address gameToken, address params, uint256 endowment, address factory)
+        private
+        view
+        returns (bytes memory)
+    {
+        return abi.encode(
+            gameToken,
+            params,
+            address(market),
+            d.registry.starterRoot(),
+            d.registry.freeRoot(),
+            d.registry.snapshotBlock(),
+            endowment,
+            factory
+        );
+    }
+
+    /// @dev v3.10 review (twin front-run): a twin game bound to the Desk with a token other than the launched
+    /// token cannot move the escrowed launch tokens; forward reads the bound registry's token and finds nothing.
+    /// Capturing the endowment needs the real token AND the private game configuration (roots, snapshot,
+    /// endowment) before the honest Desk.bind, which is why the runbook binds right after job A.
+    function testTwinWithForeignTokenCannotDrainEscrow() public {
+        uint256 endowment = 200_000_000 ether;
+        MockToken other = new MockToken();
+        (address fresh, GameRegistry twin, RewardPool pool) = _freshGame(endowment, address(other));
+        assertEq(address(SwarmDesk(fresh).registry()), address(twin));
+        EndowmentEscrow e = new EndowmentEscrow(address(twin.factory()), address(twin.factory()), fresh);
+        token.transfer(address(e), endowment);
+        vm.expectRevert(InsufficientBalance.selector);
+        e.forward(address(twin), 21, 1, registryCode, 22, 0, poolCode);
+        assertEq(token.balanceOf(address(e)), endowment);
+        assertEq(token.balanceOf(address(pool)), 0);
+        assertFalse(e.forwarded());
     }
 
     function testForwardRejectsBadProofs() public {

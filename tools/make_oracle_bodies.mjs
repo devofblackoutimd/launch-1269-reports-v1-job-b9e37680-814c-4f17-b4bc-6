@@ -3,6 +3,7 @@
 import {writeFileSync, mkdirSync, readFileSync} from 'node:fs';
 import {oracleQuestionHash} from './oracle_question_hash.mjs';
 import {keccak256, utf8} from '../keeper/lib/eth.mjs';
+import {scheduleBody} from './schedule_bodies.mjs';
 const common = {
   v:1, chainId:1, window:{fromBlock:26122900,toBlock:26122901}, answerType:'bytes32[]', evidence:'panel',
   panelSize:5, quorum:4, validForSeconds:21600, allowAmbiguous:true,
@@ -37,10 +38,8 @@ const config={source:'https://imd.fun/docs/',checkedAt:'2026-10-11',
 writeFileSync(`${dir}/oracle-config.json`,JSON.stringify(config,null,2)+'\n');
 const target=process.argv[2];
 if(target) {
- if(!/^0x[0-9a-fA-F]{40}$/.test(target)||BigInt(target)===0n) throw Error('Supply the real predicted/deployed SwarmDesk');
- for(const [name,body,cadence,runs] of [['event',event,{cron:'5 */6 * * *',tz:'UTC'},28],['regulator',regulator,{cron:'5 0 * * 4',tz:'UTC'},4]]) {
-  const input={...body,deliver:{chainId:4663,target,selector:'0x510379c7',onFailure:'0xa7980e31'}};
-  writeFileSync(`${dir}/${name}-schedule.json`,JSON.stringify({action:'schedule.create',input:{label:`BLACKOUT v3.7 ${name}`,action:'oracle.request',cadence,runs,input}},null,2)+'\n');
+ for(const [name,body] of [['event',event],['regulator',regulator]]) {
+  writeFileSync(`${dir}/${name}-schedule.json`,JSON.stringify(scheduleBody(name,body,target),null,2)+'\n');
  }
 }
 console.log(JSON.stringify(config,null,2));
