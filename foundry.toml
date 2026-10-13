@@ -8,7 +8,7 @@ solc = "0.8.26"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
-via_ir = true
+via_ir = false
 remappings = ["@openzeppelin/contracts/=vendor/openzeppelin/contracts/", "forge-std/=vendor/forge-std/src/", "solmate/=vendor/solmate/", "v4-core/=vendor/v4-core/"]
 
 [profile.default.fuzz]
@@ -18,3 +18,4 @@ runs = 256
 runs = 128
 depth = 64
 fail_on_revert = false
+bytecode_hash = "none"
