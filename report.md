@@ -1,4 +1,4 @@
-# BLACKOUT v3.9 / v3.10 / v3.11 report
+# BLACKOUT v3.9 / v3.10 / v3.11 / v3.12 report
 
 Source only. No deployment, broadcast, oracle purchase, schedule, token action or mint. v3.10 finishes v3.9
 (job 14aa1d96). **No contract source changed in v3.10**: every module, Registry, Params, SwarmDesk,
@@ -70,7 +70,7 @@ The second-contributor review of v3.8 → v3.9 is in [docs/review-v39-independen
 
 Fees, severity floor, escrow refactor, Desk constructor packing and keeper relay/wiring had no findings.
 
-## v3.11 fork rehearsal (this job)
+## v3.11 fork rehearsal (job 2f166600)
 
 Source only; nothing deployed or broadcast; no contract logic changed (the rehearsal found no bug in the
 contracts). `tools/rehearse_v311.sh <4663 rpc>` starts a local anvil fork of Robinhood Chain, builds with the IMD
@@ -116,9 +116,85 @@ platform contracts and bytecode, without spending IMD on Sepolia launches. What 
 admission (audit panel, manifest, stand-in checks), the plane's own liquidity/price figures for the ETH pair,
 live oracle schedules and the real attester, and the gas price on launch day.
 
+## v3.12 launch-ready source (job c36ea654)
+
+Source only. No deployment, broadcast, token action or oracle purchase. No contract changed.
+
+**1. foundry.toml: not changed (blocked).** The brief asked for via_ir false and bytecode_hash "none" in the
+root profile. This job type protects `foundry.toml`, and the previous attempt was rejected
+(`path_violation: foundry.toml`), so the file is unchanged: `via_ir = true` and no `bytecode_hash`. The IMD
+imported-launch check will keep blocking on bytecode_hash until the requester gets the change made in a job
+where `foundry.toml` is writable, or by the platform. The edit needed is exactly two lines in
+`[profile.default]`: `via_ir = false` and `bytecode_hash = "none"`. The rest of the profile (solc 0.8.26,
+cancun, optimizer true, 200 runs) already matches. Until then the launch build uses the documented overrides
+(`FOUNDRY_VIA_IR=false FOUNDRY_BYTECODE_HASH=none`, `out-launch/`), which produce the bytecode below.
+
+**2. Pins unchanged.** Creation-code hashes of the launch build (`artifacts/v312/launch-creation-hashes.txt`),
+all equal to research 4e478378 §3:
+
+| Contract | Creation hash (launch toolchain) |
+|---|---|
+| GameRegistry (`SwarmCode.REGISTRY_LAUNCH`) | `0xee08039e9860c09d55aefe5cd2d9ffd5993f3fe60a1d606549902f56188418cb` |
+| Params (`SwarmCode.PARAMS_LAUNCH`) | `0x26c9f36af040b02eba9644f52daeed84fae4e42eab9bdb23277d0bb28c6dc6c0` |
+| SwarmDesk | `0x9e0cf571a687b4e79948f2af5fd2095058226c11bd002342955d6022ddeda214` |
+| EndowmentEscrow | `0xeeb7a2c17455a83fd04d6ab155c2c580720bd0d3c02d95a6bc0e9cd213491610` |
+| V4Market | `0x758e2ab5a6db72b6c5192702ecb0fcb291101c599f91e1bbee1cc36091e3a974` |
+| `ModuleCode.launchHash(0..13)` | unchanged; `tools/pin_module_code.py --check` passes on both builds |
+
+The via-IR repo pins (`REGISTRY_REPO`, `PARAMS_REPO`, `ModuleCode.repoHash`) **stay**. Removing them would
+change contract bytecode: `SwarmCode.isRegistry/isParams` are inlined into SwarmDesk and EndowmentEscrow, and
+`ModuleCode.matches/repoHash` into GameRegistry and EndowmentEscrow. Dropping them would move the SwarmDesk,
+EndowmentEscrow and GameRegistry launch pins, and through `REGISTRY_LAUNCH` the V4Market pin. The repository's
+own via-IR build also still needs them, because `foundry.toml` is via-IR.
+
+**3. Checks** (logs in `artifacts/v312/`):
+
+| Check | Result |
+|---|---|
+| `forge build` (plain `foundry.toml`, via-IR, no env) | passes (16 min compile) |
+| `forge test` (plain `foundry.toml`, no env) | 265 passed, 0 failed, 6 skipped (same skips), 47 suites, including the new `TwinCaptureV312` |
+| `forge test` (launch toolchain overrides) | 265 passed, 0 failed, 6 skipped (the 5 fork-rehearsal tests and the optional live-RPC test skip offline), 47 suites |
+| Fork rehearsal `tools/rehearse_v311.sh https://robinhood.drpc.org` (anvil fork of 4663, block 87346575) | 5 passed, 0 failed (`artifacts/v312/rehearsal.log`); M1–M13 against the real ProjectFactory, registry, LaunchFactory, PoolManager |
+| `forge fmt --check` | passes |
+| `pin_module_code.py --check`, `pin_swarm_code.py --check` | pass, both toolchains |
+| Node (`keeper-v39`, `oracle-v310`, `oracle-v37`, `reveal`, `ui-v35`) | all pass |
+| Python `unittest` (`test/python`) | 34 passed |
+
+New test (test only): `test/TwinCaptureV312.t.sol`, three tests behind the M-2 document (honest path, twin
+orphans the honest game, twin cannot pay the attacker).
+
+**4. IMD public check (`/requests/check`) for M1, M2, M3, M4, M7: not run.** The check runs against the new
+commit, and that commit exists only after this job is delivered. This worker cannot push, and the steps
+(audit-imported-code, adapt-contract-project, adversarial-review) would see the unchanged `foundry.toml`. The
+expected result is the known bytecode_hash blocker, which item 1 could not clear. Run it once the delivered
+commit is public and the profile change has landed, and record `blockers` per launch.
+
+**5. M-2.** [docs/m2-trust-assumption.md](docs/m2-trust-assumption.md) is written for the audit judge. A twin
+capture cannot pay the attacker: the escrow forwards only to a pinned RewardPool, and that pool pays only by
+the mining rules. It is griefing (the honest modules are orphaned), rated low as a platform trust assumption,
+and mitigated by binding right after job A and checking `Desk.registry()` before `forward`. One correction to
+the brief: capturing the Desk and the forward needs a paid factory launch of at least Params, GameRegistry and
+RewardPool. A twin that should also run as a game needs the full 8-contract job A shape.
+
+**6. Runbook.** `launch-v39.md` has the research corrections: named `$contract:Params` /
+`$contract:GameRegistry` references, the ProjectFactory registry `0xf52b…8406` for proofs, the M3 request
+fields (no owner, no `initialMarketCapWei`), objective texts for M1, M2, M4 and M7 with one common paragraph,
+the M-2 pointer in M1 and M4, and timing (1-contract median about 63 min; 8-contract unknown, budget 2 h; about
+7–9 h from M1 to M10).
+
+**Open items (v3.12):**
+1. `foundry.toml`: apply `via_ir = false` and `bytecode_hash = "none"` in a job where the file may be edited.
+   The launch pins above stay valid (they are the override build). After the change, the via-IR repo pins can
+   only be dropped together with a re-pin (see 2).
+2. Run the IMD public check for M1, M2, M3, M4 and M7 against the delivered commit and record the blockers.
+3. Research 4e478378 was not in this workspace. Compare the objective texts in `launch-v39.md` with its
+   recommended texts before pasting.
+4. Still open from v3.11: the requester inputs (snapshot, roots, keeper wallet, Ethereum IMD), the plane's
+   admission on the live path, and launch-day gas.
+
 ## Still open
 
-1. **M-2 twin front-run.** It cannot be closed without an on-chain fact only the honest launch has. Mitigation:
+1. **M-2 twin front-run** (trust assumption, [docs/m2-trust-assumption.md](docs/m2-trust-assumption.md)). It cannot be closed without an on-chain fact only the honest launch has. Mitigation:
    keep `starterRoot`, `freeRoot`, the snapshot block and the lists private until `Desk.registry()` equals the
    job A registry; bind immediately after job A; never forward otherwise. If the requester wants a code fix,
    they must decide the anchor (for example a factory record of the payer). That changes the Desk pin.

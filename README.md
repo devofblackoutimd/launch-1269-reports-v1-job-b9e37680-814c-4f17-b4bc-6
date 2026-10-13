@@ -15,6 +15,7 @@ The code retains immutable deployment identities, exact creation-code enrollment
 - [Read API and game rules](docs/api-v35.md)
 - [v3.8 launch kit, blocker table and open items](launch-v38.md)
 - [v3.7 launch parameters, exact oracle bodies and operations](launch-v37.md)
+- [M-2 twin front-run trust assumption (v3.12)](docs/m2-trust-assumption.md)
 - [Platform research report b94e6839 (copy)](docs/research/b94e6839-platform-report.md)
 - [Independent v3.7 contributor review](docs/review-v37-independent.md)
 - [Entropy capture operations](docs/entropy-v34.md)
